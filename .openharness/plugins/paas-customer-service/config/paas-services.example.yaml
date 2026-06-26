@@ -1,0 +1,67 @@
+services:
+  - id: ocr
+    displayName: OCR 文字识别
+    aliases:
+      - ocr
+      - OCR
+      - 文字识别
+      - 图片识别
+      - 图像文字识别
+      - 图片转文字
+      - 扫描件识别
+      - 通用文字识别
+    manualUrl: "https://ai.youdao.com/DOCSIRMA/html/ocr/api/tyocr/"
+    probe:
+      type: http
+      method: POST
+      url: "https://openapi.youdao.com/ocrapi"
+      timeoutMs: 10000
+      requestTemplateRef: "ocr-default"
+    log:
+      stream_name: "aicloud_ocr"
+    erp:
+      product: "ocr"
+      message: "用户反馈 OCR 服务异常，请客服结合 probe 和日志摘要跟进。"
+
+  - id: tts
+    displayName: TTS 语音合成
+    aliases:
+      - tts
+      - TTS
+      - 语音合成
+      - 文本转语音
+      - 语音播报
+    manualUrl: "https://ai.youdao.com/DOCSIRMA/html/tts/api/yyhc/index.html"
+    probe:
+      type: http
+      method: POST
+      url: "https://openapi.youdao.com/ttsapi"
+      timeoutMs: 10000
+      requestTemplateRef: "tts-default"
+    log:
+      stream_name: "aicloud_tts"
+    erp:
+      product: "tts"
+      message: "用户反馈 TTS 服务异常，请客服结合 probe 和日志摘要跟进。"
+
+  - id: asr
+    displayName: ASR 语音识别
+    aliases:
+      - asr
+      - ASR
+      - 语音识别
+      - 音频转文字
+      - 语音转文字
+      - 短语音识别
+    manualUrl: "https://ai.youdao.com/DOCSIRMA/html/tts/api/dyysb/index.html"
+    probe:
+      type: http
+      method: POST
+      url: "https://openapi.youdao.com/asrapi"
+      timeoutMs: 10000
+      requestTemplateRef: "asr-default"
+    log:
+      stream_name: "aicloud_asr"
+    erp:
+      product: "asr"
+      message: "用户反馈 ASR 服务异常，请客服结合 probe 和日志摘要跟进。"

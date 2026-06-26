@@ -1,0 +1,8 @@
+{
+  "name": "paas-customer-service",
+  "version": "1.0.0",
+  "description": "PaaS customer-service preprocessing agent for service docs, demo probes, log lookup, ERP escalation, and Qiyu messaging.",
+  "enabled_by_default": true,
+  "skills_dir": "skills",
+  "tools_dir": "tools"
+}
