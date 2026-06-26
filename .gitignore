@@ -23,6 +23,7 @@ htmlcov/
 *.swo
 *~
 .python-version
+.superpowers
 
 # React TUI frontend
 frontend/terminal/node_modules/
