@@ -24,6 +24,7 @@ htmlcov/
 *~
 .python-version
 .superpowers
+.claude
 
 # React TUI frontend
 frontend/terminal/node_modules/
