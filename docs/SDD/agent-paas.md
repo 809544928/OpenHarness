@@ -90,7 +90,7 @@ OpenHarness 负责完整客服业务流程：
 - 服务不明确时决定追问。
 - 判断接入文档、服务报错、其他咨询、ERP 跟进等场景。
 - 接入咨询场景：匹配服务并通过七鱼 Tool 发送文档说明。
-- 错误反馈场景：按规则调用 demo probe、追问 appKey/requestId、查询日志、发 ERP 或内部工单、通知用户。
+- 错误反馈场景：按规则调用 demo probe；probe 异常时仅发 ERP 或内部工单并静默结束；probe 正常但缺少上下文时追问 appKey/requestId；收到上下文后查询日志、发 ERP 或内部工单并通知用户。
 - 需要客服人员跟进时，通过 `paas_send_erp_message` Tool 提交 ERP 消息。
 - 其他场景：直接结束，不调用 probe、日志、ERP 或转接能力。
 - 输出 `action`、`toolResults`、`newState`、`terminal` 等最小 JSON 摘要给 Java。
@@ -132,7 +132,7 @@ AiCustomerServiceExecutor
        └─ 解析最小 output JSON
           ↓
 OpenHarness Skill/Tool 编排客服流程
-  ├─ 必要时 qiyu_send_message 给用户发消息
+  ├─ 必要时 qiyu_send_message 给用户发消息（probe 异常 ERP 分支除外）
   ├─ 必要时通过 paas_send_erp_message 提交客服人员跟进
   ├─ 必要时 paas_probe_service / paas_query_logs / paas_send_erp_message
   └─ 返回最小结构化摘要

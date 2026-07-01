@@ -44,7 +44,7 @@ User-visible messages should be short, clear, action-oriented, and safe. Compose
 ### Ask Request Context
 
 ```text
-线上 demo 检测暂未发现服务整体异常。请提供 appKey 和 requestId，如果方便也请补充报错时间，方便客服进一步排查。
+线上 服务 检测暂未发现服务整体异常。请提供 appKey 和 requestId，如果方便也请补充报错时间，方便客服进一步排查。
 ```
 
 ### Logs Queried and ERP Submitted
