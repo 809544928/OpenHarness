@@ -7,11 +7,11 @@ description: Use when composing short user-visible Qiyu messages for PaaS docume
 
 ## Overview
 
-User-visible messages should be short, clear, action-oriented, and safe. Compose text for `qiyu_send_message`; do not expose tool names or raw internal data.
+User-visible messages should be short, clear, action-oriented, and safe. Compose text for `qiyu_send_message` only when the active flow requires a customer-facing message; probe-failure ERP escalation intentionally sends no Qiyu message. Do not expose tool names or raw internal data.
 
 ## When to Use
 
-- A flow needs a Qiyu message for clarification, documentation, ERP follow-up, or unsupported scope.
+- A flow needs a Qiyu message for clarification, documentation, log-query ERP follow-up, missing-context ERP follow-up, or unsupported scope.
 - Tool output must be converted into a safe customer-facing summary.
 - A message may contain sensitive identifiers, logs, headers, tokens, internal URLs, or raw exception details.
 
@@ -45,12 +45,6 @@ User-visible messages should be short, clear, action-oriented, and safe. Compose
 
 ```text
 线上 demo 检测暂未发现服务整体异常。请提供 appKey 和 requestId，如果方便也请补充报错时间，方便客服进一步排查。
-```
-
-### Probe Failure ERP Submitted
-
-```text
-我们检测到 {displayName} 当前可能存在异常，已经提交客服人员继续排查，请稍候。
 ```
 
 ### Logs Queried and ERP Submitted
@@ -95,12 +89,13 @@ User-visible messages should be short, clear, action-oriented, and safe. Compose
 4. Never claim an ERP message, Qiyu message, probe, or log query succeeded unless the relevant tool returned success.
 5. Do not invent manual URLs or service names.
 6. Do not imply a separate customer-session escalation action; ERP submission is the only human-follow-up mechanism.
+7. Do not compose or send a probe-failure ERP notification; that branch sends ERP only and finishes silently.
 
 ## Common Mistakes
 
 | Mistake | Correct behavior |
 |---|---|
-| “paas_probe_service 检测失败” | “我们检测到服务当前可能存在异常。” |
+| Probe failure → composing a customer notification | Do not compose or send a Qiyu message; the branch sends ERP only and finishes silently. |
 | Pasting log highlights directly to user | Send a short summary or submit internally through ERP. |
 | “已修复” after ERP sent | Say it has been submitted for follow-up. |
 | Including internal ticket URL by default | Only include user-safe links if the tool and policy allow it. |

@@ -51,7 +51,7 @@ State:
 2. Call `paas_probe_service`.
 3. If probe indicates unavailable, timeout, HTTP 5xx, network error, auth error, invalid response, or abnormal response, call `paas_send_erp_message`.
    Use `available` as the primary decision field. Do not send raw probe JSON or individual diagnostic fields such as `statusCode`, `responseKind`, or `apiErrorCode` to the user.
-4. Call `qiyu_send_message` to tell the user the issue has been forwarded.
+4. Do not call `qiyu_send_message` for this branch. Probe failure is a silent ERP escalation from the user's perspective.
 5. Finish with `terminal=true`.
 
 State:
@@ -65,12 +65,6 @@ State:
   "terminal": true,
   "terminalReason": "erp_sent_after_probe_failure"
 }
-```
-
-User message:
-
-```text
-我们检测到 {displayName} 当前可能存在异常，已经提交客服人员继续排查，请稍候。
 ```
 
 Probe diagnostics may be included in `paas_send_erp_message.probeSummary`, for example: `probe unavailable: serviceId=tts, statusCode=200, errorType=auth_error, responseKind=json, apiErrorCode=202, latencyMs=98`. Do not include credentials, signatures, request bodies, response samples, audio bytes, or base64 payloads.
@@ -155,18 +149,19 @@ If the user says they cannot provide requestId or appKey:
 
 1. Do not send ERP before probe if service is clear.
 2. Do not ask for requestId before probe.
-3. If probe fails, do not ask user for requestId.
+3. If probe fails, do not ask user for requestId and do not call `qiyu_send_message`; send ERP and finish silently.
 4. If logs fail, still send ERP with log failure summary.
-5. After ERP submission, notify user and finish.
+5. After ERP submission from log-query or missing-request-context branches, notify user and finish.
 6. Logs must be queried by structured fields only; never create raw SQL, DSL, or Lucene queries.
 7. User-visible messages must not expose raw logs, appKeys, headers, cookies, tokens, signatures, or internal endpoints.
-8. Minimal probe diagnostics are internal and ERP-facing only; `qiyu_send_message` must use coarse natural-language status messages.
+8. Minimal probe diagnostics are internal and ERP-facing only; probe failure diagnostics must not be sent through `qiyu_send_message`.
 
 ## Common Mistakes
 
 | Mistake | Correct behavior |
 |---|---|
 | “OCR 报 500” → ask for requestId first | Resolve service, then probe. |
-| Probe failed → ask user for more info | Send ERP and notify user. |
+| Probe failed → ask user for more info | Send ERP and finish silently without Qiyu. |
+| Probe failed → notify user through `qiyu_send_message` | Do not send a Qiyu message for probe failure; only ERP is sent. |
 | Probe normal + no requestId → query logs anyway | Ask for request context. |
 | Logs unavailable → abandon case | Send ERP with safe failure summary. |

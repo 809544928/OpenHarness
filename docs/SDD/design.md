@@ -136,7 +136,7 @@ OpenHarness:
   3. 调用 paas_probe_service(serviceId=ocr)。
   4. probe 返回不可用或异常。
   5. 调用 paas_send_erp_message，携带用户摘要和 probe 摘要。
-  6. 调用 qiyu_send_message 告知用户已提交客服。
+  6. 不调用 qiyu_send_message；probe 异常分支仅提交 ERP 并静默结束。
   7. 输出 terminal=true，newState.terminalReason=erp_sent_after_probe_failure。
 ```
 

@@ -16,7 +16,7 @@
 
 1. 用户问接入文档。
 2. 用户反馈服务报错。
-3. OpenHarness 能识别服务、追问、调用 probe、查日志、发 ERP、发七鱼消息。
+3. 如果 probe 异常时仅发 ERP 并静默结束，probe 正常但缺少上下文时追问，收到 requestId 后查日志、发 ERP、发七鱼消息。
 4. 每轮最终输出 Java 可解析的最小 JSON。
 5. Skill 只写知识、规则、话术、流程。
 6. Tool 执行真实外部调用。
@@ -132,7 +132,7 @@ tests/test_plugins/test_paas_customer_service/
 3. 实现 `paas_send_erp_message`。
 4. 写 `paas_service_error_flow`。
 5. 写 `paas_response_composer`。
-6. 验证 probe 异常、probe 正常追问 requestId、收到 requestId 后查日志并发 ERP。
+6. 验证 probe 异常时仅发 ERP 并静默结束、probe 正常追问 requestId、收到 requestId 后查日志并发 ERP。
 
 ### Phase 5：治理、白名单、安全和验收
 
@@ -696,7 +696,7 @@ State:
 2. Call `paas_probe_service`.
 3. If probe indicates unavailable, timeout, 5xx, network error, or abnormal response:
    - Call `paas_send_erp_message`.
-   - Call `qiyu_send_message` to tell user the issue has been forwarded.
+   - Do not call `qiyu_send_message`; probe failure is a silent ERP escalation from the user's perspective.
    - Finish with `terminal=true`.
 
 State:
@@ -773,9 +773,9 @@ If the user says they cannot provide requestId:
 
 1. Do not send ERP before probe if service is clear.
 2. Do not ask for requestId before probe.
-3. If probe fails, do not ask user for requestId.
+3. If probe fails, do not ask user for requestId and do not call `qiyu_send_message`; send ERP and finish silently.
 4. If logs fail, still send ERP with log failure summary.
-5. After ERP, notify user and finish.
+5. After ERP from log-query or missing-request-context branches, notify user and finish.
 ```
 
 ---
@@ -810,7 +810,7 @@ description: Use when composing short user-visible Qiyu messages for PaaS docume
 
 ## Overview
 
-User-visible messages should be short, clear, and action-oriented.
+User-visible messages should be short, clear, and action-oriented. Do not compose a probe-failure ERP notification; that branch sends ERP only and finishes silently.
 
 ## General Style
 
@@ -840,12 +840,6 @@ User-visible messages should be short, clear, and action-oriented.
 
 ```text
 线上 demo 检测暂未发现服务整体异常。请提供 appKey 和 requestId，如果方便也请补充报错时间，方便客服进一步排查。
-```
-
-### Probe Failure Escalated
-
-```text
-我们检测到 {displayName} 当前可能存在异常，已经提交客服人员继续排查，请稍候。
 ```
 
 ### Logs Queried and Escalated
