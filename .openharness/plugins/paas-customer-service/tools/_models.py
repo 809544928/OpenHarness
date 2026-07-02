@@ -59,11 +59,6 @@ class ServiceResolution(BaseModel):
     candidates: list[ServiceCandidate]
 
 
-class TimeRange(BaseModel):
-    start: str | None = None
-    end: str | None = None
-
-
 class PaaSAgentInput(BaseModel):
     conversation_id: str = Field(alias="conversationId")
     platform_session_id: str = Field(alias="platformSessionId")
