@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import load_plugin_module
 
@@ -39,7 +40,12 @@ async def test_send_erp_message_posts_popo_payload_to_default_endpoint(tool_cont
         serviceId="ocr",
         userSummary="用户 appKey app_abcdef OCR 报 401",
         probeSummary="probe unavailable: serviceId=ocr, statusCode=500",
-        logSummary="request req-123 not found",
+        logResult={
+            "serviceId": "ocr",
+            "streamName": "aicloud_ocr",
+            "queryInfo": "req-123",
+            "response": {"hits": [{"body": "raw log"}]},
+        },
         platformContext={
             "conversationId": "qiyu:6383959733",
             "platformSessionId": "6383959733",
@@ -63,7 +69,7 @@ async def test_send_erp_message_posts_popo_payload_to_default_endpoint(tool_cont
             "处理说明: 用户反馈 OCR 服务异常，请客服结合 probe 和日志摘要跟进。\n"
             "用户摘要: 用户 appKey app_abcdef OCR 报 401\n"
             "Probe摘要: probe unavailable: serviceId=ocr, statusCode=500\n"
-            "日志摘要: request req-123 not found\n"
+            "日志结果: {\"serviceId\":\"ocr\",\"streamName\":\"aicloud_ocr\",\"queryInfo\":\"req-123\",\"response\":{\"hits\":[{\"body\":\"raw log\"}]}}\n"
             "会话: qiyu:6383959733\n"
             "平台会话: 6383959733\n"
             "平台用户: user-1"
@@ -102,7 +108,7 @@ async def test_send_erp_message_prefers_popo_endpoint_env(tool_context, monkeypa
         serviceId="tts",
         userSummary="TTS 报错",
         probeSummary=None,
-        logSummary=None,
+        logResult=None,
         platformContext={"conversationId": "conv-1"},
     )
 
@@ -140,7 +146,7 @@ async def test_send_erp_message_falls_back_to_erp_endpoint_env(tool_context, mon
         serviceId="asr",
         userSummary="ASR 报错",
         probeSummary=None,
-        logSummary=None,
+        logResult=None,
         platformContext={},
     )
 
@@ -153,7 +159,7 @@ async def test_send_erp_message_falls_back_to_erp_endpoint_env(tool_context, mon
 
 
 @pytest.mark.asyncio
-async def test_send_erp_message_omits_missing_probe_and_log_summary(tool_context, monkeypatch):
+async def test_send_erp_message_omits_missing_probe_and_log_result(tool_context, monkeypatch):
     monkeypatch.delenv("PAAS_POPO_ENDPOINT", raising=False)
     monkeypatch.delenv("PAAS_ERP_ENDPOINT", raising=False)
     module = load_plugin_module("paas_send_erp_message_tool")
@@ -178,7 +184,7 @@ async def test_send_erp_message_omits_missing_probe_and_log_summary(tool_context
         serviceId="tts",
         userSummary="TTS 失败",
         probeSummary=None,
-        logSummary=None,
+        logResult=None,
         platformContext={},
     )
 
@@ -189,7 +195,7 @@ async def test_send_erp_message_omits_missing_probe_and_log_summary(tool_context
     assert result.is_error is False
     assert message.startswith("[aicloud-customer-service]")
     assert "Probe摘要:" not in message
-    assert "日志摘要:" not in message
+    assert "日志结果:" not in message
     assert "用户摘要: TTS 失败" in message
 
 
@@ -217,7 +223,7 @@ async def test_send_erp_message_returns_error_for_nonzero_popo_errcode(tool_cont
         serviceId="ocr",
         userSummary="OCR 报错",
         probeSummary="probe failed",
-        logSummary="log failed",
+        logResult={"errorType": "timeout"},
         platformContext={},
     )
 
@@ -232,3 +238,53 @@ async def test_send_erp_message_returns_error_for_nonzero_popo_errcode(tool_cont
         "errcode": 1001,
         "errmsg": "invalid robot",
     }
+
+
+def test_send_erp_message_schema_rejects_log_summary():
+    module = load_plugin_module("paas_send_erp_message_tool")
+
+    with pytest.raises(ValidationError):
+        module.PaaSSendErpMessageInput(
+            serviceId="ocr",
+            userSummary="OCR 报错",
+            probeSummary=None,
+            logSummary="old summary",
+            platformContext={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_send_erp_message_truncates_long_log_result(tool_context, monkeypatch):
+    module = load_plugin_module("paas_send_erp_message_tool")
+    captured: dict[str, object] = {}
+
+    async def fake_safe_http_json(method, url, *, timeout_ms, json_body=None, headers=None, max_sample_chars=500):
+        captured["json_body"] = json_body
+        return module.SafeHttpResult(
+            ok=True,
+            status_code=200,
+            latency_ms=1,
+            error_type="ok",
+            response_sample='{"errcode":0}',
+            json_body={"errcode": 0, "errmsg": "ok", "data": {"msgId": "truncated-msg"}},
+            content_type="application/json",
+            response_kind="json",
+        )
+
+    monkeypatch.setattr(module, "safe_http_json", fake_safe_http_json)
+    tool = module.PaaSSendErpMessageTool()
+    args = module.PaaSSendErpMessageInput(
+        serviceId="ocr",
+        userSummary="OCR 报错",
+        probeSummary=None,
+        logResult={"body": "x" * (module.MAX_LOG_RESULT_CHARS + 100)},
+        platformContext={},
+    )
+
+    result = await tool.execute(args, tool_context)
+    message = captured["json_body"]["message"]
+
+    assert result.is_error is False
+    assert "日志结果:" in message
+    assert "...(truncated)" in message
+    assert len(message) < module.MAX_LOG_RESULT_CHARS + 500

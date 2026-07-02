@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
@@ -31,13 +32,16 @@ DEFAULT_POPO_ENDPOINT = (
     "zZVZJrtOORw3LNEvJWUKjQUNLtBmxUBk9CKT3MLCVVNQ17HdJXTLF5DIA7LzbgFjOO5RYWFMdSSqBEltdVblYsrJPIbiBZOP"
 )
 POPO_MESSAGE_PREFIX = "[aicloud-customer-service]"
+MAX_LOG_RESULT_CHARS = 4000
 
 
 class PaaSSendErpMessageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     service_id: str = Field(alias="serviceId")
     user_summary: str = Field(alias="userSummary", max_length=1000)
     probe_summary: str | None = Field(default=None, alias="probeSummary", max_length=1000)
-    log_summary: str | None = Field(default=None, alias="logSummary", max_length=1000)
+    log_result: dict[str, Any] | None = Field(default=None, alias="logResult")
     platform_context: dict[str, Any] = Field(alias="platformContext")
 
 
@@ -55,12 +59,12 @@ class PaaSSendErpMessageTool(BaseTool):
 
         user_summary = arguments.user_summary
         probe_summary = arguments.probe_summary
-        log_summary = arguments.log_summary
+        log_result = arguments.log_result
         message = _build_popo_message(
             service,
             user_summary,
             probe_summary,
-            log_summary,
+            log_result,
             arguments.platform_context,
         )
         body = {"message": message, "timestamp": _current_millis()}
@@ -106,7 +110,7 @@ def _build_popo_message(
     service: Any,
     user_summary: str,
     probe_summary: str | None,
-    log_summary: str | None,
+    log_result: dict[str, Any] | None,
     platform_context: dict[str, Any],
 ) -> str:
     lines = [
@@ -117,8 +121,8 @@ def _build_popo_message(
     ]
     if probe_summary:
         lines.append(f"Probe摘要: {probe_summary}")
-    if log_summary:
-        lines.append(f"日志摘要: {log_summary}")
+    if log_result is not None:
+        lines.append(f"日志结果: {_format_log_result(log_result)}")
     conversation_id = platform_context.get("conversationId")
     if conversation_id:
         lines.append(f"会话: {conversation_id}")
@@ -129,6 +133,13 @@ def _build_popo_message(
     if platform_user_id:
         lines.append(f"平台用户: {platform_user_id}")
     return "\n".join(lines)
+
+
+def _format_log_result(log_result: dict[str, Any]) -> str:
+    rendered = json.dumps(log_result, ensure_ascii=False, separators=(",", ":"))
+    if len(rendered) <= MAX_LOG_RESULT_CHARS:
+        return rendered
+    return rendered[:MAX_LOG_RESULT_CHARS] + "...(truncated)"
 
 
 def _popo_errcode(json_body: dict[str, Any] | None) -> int | None:
