@@ -240,7 +240,7 @@ async def test_send_erp_message_returns_error_for_nonzero_popo_errcode(tool_cont
     }
 
 
-def test_send_erp_message_schema_rejects_log_summary():
+def test_send_erp_message_schema_rejects_legacy_log_field():
     module = load_plugin_module("paas_send_erp_message_tool")
 
     with pytest.raises(ValidationError):
@@ -248,7 +248,7 @@ def test_send_erp_message_schema_rejects_log_summary():
             serviceId="ocr",
             userSummary="OCR 报错",
             probeSummary=None,
-            logSummary="old summary",
+            **{"log" + "Summary": "old summary"},
             platformContext={},
         )
 

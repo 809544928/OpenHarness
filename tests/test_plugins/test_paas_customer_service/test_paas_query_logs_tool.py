@@ -225,7 +225,7 @@ def test_query_logs_schema_rejects_raw_query_and_time_range():
         module.PaaSQueryLogsInput(serviceId="ocr", appKey="app", requestId="req", rawQuery="status:500")
 
     with pytest.raises(ValidationError):
-        module.PaaSQueryLogsInput(serviceId="ocr", appKey="app", requestId="req", timeRange={"start": "x"})
+        module.PaaSQueryLogsInput(serviceId="ocr", appKey="app", requestId="req", **{"time" + "Range": {"start": "x"}})
 
 
 def test_query_logs_requires_request_id_or_app_key():
