@@ -50,19 +50,17 @@ _PROBE_PAYLOAD_CODES = {
 
 
 def build_youdao_probe_request(
+    request_template_ref: str,
     service_id: str,
     credentials: YoudaoCredentials,
     *,
     salt: str,
     curtime: str,
 ) -> ProbeRequest:
-    if service_id == "ocr":
-        return _build_ocr_probe_request(credentials, salt=salt, curtime=curtime)
-    if service_id == "asr":
-        return _build_asr_probe_request(credentials, salt=salt, curtime=curtime)
-    if service_id == "tts":
-        return _build_tts_probe_request(credentials, salt=salt, curtime=curtime)
-    raise ValueError(f"unsupported Youdao probe service: {service_id}")
+    builder = _TEMPLATE_BUILDERS.get(request_template_ref)
+    if builder is None:
+        raise ValueError(f"unsupported Youdao probe request template: {request_template_ref}")
+    return builder(service_id, credentials, salt=salt, curtime=curtime)
 
 
 def classify_youdao_probe_result(service_id: str, http_result: SafeHttpResult) -> dict[str, Any]:
@@ -80,13 +78,19 @@ def classify_youdao_probe_result(service_id: str, http_result: SafeHttpResult) -
     }
 
 
-def _build_ocr_probe_request(credentials: YoudaoCredentials, *, salt: str, curtime: str) -> ProbeRequest:
+def _build_ocr_probe_request(
+    service_id: str,
+    credentials: YoudaoCredentials,
+    *,
+    salt: str,
+    curtime: str,
+) -> ProbeRequest:
     image = _demo_png_base64()
     form_body = _signed_base_form(credentials, input_field="img", input_value=image, salt=salt, curtime=curtime)
     form_body.update({"langType": "zh-CHS", "detectType": "10012", "imageType": "1", "docType": "json"})
     return ProbeRequest.model_validate(
         {
-            "serviceId": "ocr",
+            "serviceId": service_id,
             "method": "POST",
             "url": "https://openapi.youdao.com/ocrapi",
             "headers": {"Content-Type": "application/x-www-form-urlencoded"},
@@ -95,13 +99,19 @@ def _build_ocr_probe_request(credentials: YoudaoCredentials, *, salt: str, curti
     )
 
 
-def _build_asr_probe_request(credentials: YoudaoCredentials, *, salt: str, curtime: str) -> ProbeRequest:
+def _build_asr_probe_request(
+    service_id: str,
+    credentials: YoudaoCredentials,
+    *,
+    salt: str,
+    curtime: str,
+) -> ProbeRequest:
     audio = _demo_wav_base64()
     form_body = _signed_base_form(credentials, input_field="q", input_value=audio, salt=salt, curtime=curtime)
     form_body.update({"langType": "zh-CHS", "format": "wav", "rate": "16000", "channel": "1", "type": "1"})
     return ProbeRequest.model_validate(
         {
-            "serviceId": "asr",
+            "serviceId": service_id,
             "method": "POST",
             "url": "https://openapi.youdao.com/asrapi",
             "headers": {"Content-Type": "application/x-www-form-urlencoded"},
@@ -110,19 +120,32 @@ def _build_asr_probe_request(credentials: YoudaoCredentials, *, salt: str, curti
     )
 
 
-def _build_tts_probe_request(credentials: YoudaoCredentials, *, salt: str, curtime: str) -> ProbeRequest:
+def _build_tts_probe_request(
+    service_id: str,
+    credentials: YoudaoCredentials,
+    *,
+    salt: str,
+    curtime: str,
+) -> ProbeRequest:
     text = "您好,我是小明"
     form_body = _signed_base_form(credentials, input_field="q", input_value=text, salt=salt, curtime=curtime)
     form_body.update({"format": "mp3", "speed": "1", "volume": "1.00", "voiceName": "youxiaoqin"})
     return ProbeRequest.model_validate(
         {
-            "serviceId": "tts",
+            "serviceId": service_id,
             "method": "POST",
             "url": "https://openapi.youdao.com/ttsapi",
             "headers": {"Content-Type": "application/x-www-form-urlencoded"},
             "formBody": form_body,
         }
     )
+
+
+_TEMPLATE_BUILDERS = {
+    "ocr-default": _build_ocr_probe_request,
+    "asr-default": _build_asr_probe_request,
+    "tts-default": _build_tts_probe_request,
+}
 
 
 def _signed_base_form(

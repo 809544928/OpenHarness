@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from conftest import load_plugin_module
 
 
@@ -27,7 +29,7 @@ def _http_result(**overrides):
 def test_build_ocr_probe_request_uses_documented_fields():
     module = load_plugin_module("_youdao_probe")
 
-    request = module.build_youdao_probe_request("ocr", _credentials(), salt="salt", curtime="1700000000")
+    request = module.build_youdao_probe_request("ocr-default", "ocr", _credentials(), salt="salt", curtime="1700000000")
 
     assert request.method == "POST"
     assert request.url == "https://openapi.youdao.com/ocrapi"
@@ -48,7 +50,7 @@ def test_build_ocr_probe_request_uses_documented_fields():
 def test_build_asr_probe_request_uses_documented_fields():
     module = load_plugin_module("_youdao_probe")
 
-    request = module.build_youdao_probe_request("asr", _credentials(), salt="salt", curtime="1700000000")
+    request = module.build_youdao_probe_request("asr-default", "asr", _credentials(), salt="salt", curtime="1700000000")
 
     assert request.url == "https://openapi.youdao.com/asrapi"
     assert request.form_body["q"]
@@ -64,16 +66,43 @@ def test_build_asr_probe_request_uses_documented_fields():
 def test_build_tts_probe_request_uses_documented_fields():
     module = load_plugin_module("_youdao_probe")
 
-    request = module.build_youdao_probe_request("tts", _credentials(), salt="salt", curtime="1700000000")
+    request = module.build_youdao_probe_request("tts-default", "tts", _credentials(), salt="salt", curtime="1700000000")
 
     assert request.url == "https://openapi.youdao.com/ttsapi"
-    assert request.form_body["q"] == "您好"
+    assert request.form_body["q"] == "您好,我是小明"
     assert request.form_body["format"] == "mp3"
     assert request.form_body["speed"] == "1"
     assert request.form_body["volume"] == "1.00"
     assert request.form_body["voiceName"] == "youxiaoqin"
     assert request.form_body["signType"] == "v3"
     assert request.form_body["sign"]
+
+
+def test_build_probe_request_rejects_unknown_template_ref():
+    module = load_plugin_module("_youdao_probe")
+
+    with pytest.raises(ValueError) as exc_info:
+        module.build_youdao_probe_request("missing-default", "ocr", _credentials(), salt="salt", curtime="1700000000")
+
+    assert "unsupported Youdao probe request template" in str(exc_info.value)
+    assert "missing-default" in str(exc_info.value)
+
+
+def test_build_probe_request_uses_template_ref_not_service_id_for_dispatch():
+    module = load_plugin_module("_youdao_probe")
+
+    request = module.build_youdao_probe_request(
+        "ocr-default",
+        "custom-ocr",
+        _credentials(),
+        salt="salt",
+        curtime="1700000000",
+    )
+
+    assert request.service_id == "custom-ocr"
+    assert request.url == "https://openapi.youdao.com/ocrapi"
+    assert request.form_body["img"]
+    assert request.form_body["detectType"] == "10012"
 
 
 def test_classify_ocr_success_json_error_code_zero():
