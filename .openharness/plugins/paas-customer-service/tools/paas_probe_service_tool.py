@@ -50,6 +50,7 @@ class PaaSProbeServiceTool(BaseTool):
         try:
             credentials = get_youdao_credentials(service.id)
             request = build_youdao_probe_request(
+                probe.request_template_ref,
                 service.id,
                 credentials,
                 salt=str(uuid.uuid4()),

@@ -95,7 +95,7 @@ async def test_probe_service_returns_minimal_tts_audio_success(monkeypatch, tool
 
     async def fake_safe_http_form(method, url, *, timeout_ms, form_body, headers):
         assert url == "https://openapi.youdao.com/ttsapi"
-        assert form_body["q"] == "您好"
+        assert form_body["q"] == "您好,我是小明"
         assert form_body["voiceName"] == "youxiaoqin"
         return http_module.SafeHttpResult(
             ok=True,
@@ -121,6 +121,57 @@ async def test_probe_service_returns_minimal_tts_audio_success(monkeypatch, tool
         "latencyMs": 20,
         "errorType": "ok",
         "responseKind": "audio",
+        "apiErrorCode": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_probe_service_returns_unsupported_probe_for_unknown_template_ref(monkeypatch, tool_context):
+    module = load_plugin_module("paas_probe_service_tool")
+    models = load_plugin_module("_models")
+    monkeypatch.setenv("YOUDAO_APP_KEY", "app")
+    monkeypatch.setenv("YOUDAO_APP_SECRET", "secret")
+
+    service = models.ServiceDefinition.model_validate(
+        {
+            "id": "ocr",
+            "displayName": "OCR 文字识别",
+            "aliases": ["ocr"],
+            "manualUrl": "https://docs.example.com/ocr/quickstart",
+            "probe": {
+                "type": "http",
+                "method": "POST",
+                "url": "https://openapi.youdao.com/ocrapi",
+                "timeoutMs": 3000,
+                "requestTemplateRef": "missing-default",
+            },
+            "log": {"stream_name": "paas-ocr"},
+            "erp": {"product": "paas-ocr", "message": "OCR issue"},
+        }
+    )
+
+    class FakeRegistry:
+        def get(self, service_id):
+            assert service_id == "ocr"
+            return service
+
+    async def fake_safe_http_form(*args, **kwargs):
+        raise AssertionError("HTTP should not be called for unsupported templates")
+
+    monkeypatch.setattr(module, "load_service_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(module, "safe_http_form", fake_safe_http_form)
+
+    result = await module.PaaSProbeServiceTool().execute(module.PaaSProbeServiceInput(serviceId="ocr"), tool_context)
+    payload = json.loads(result.output)
+
+    assert result.is_error is False
+    assert payload == {
+        "serviceId": "ocr",
+        "available": False,
+        "statusCode": None,
+        "latencyMs": 0,
+        "errorType": "unsupported_probe",
+        "responseKind": "empty",
         "apiErrorCode": None,
     }
 
