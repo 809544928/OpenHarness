@@ -20,7 +20,7 @@ Ask concise clarification questions only when required information is missing. P
 | `waitingFor` | Meaning | Typical next input |
 |---|---|---|
 | `service` | The related PaaS service is unclear. | Service name or alias such as OCR, TTS, ASR. |
-| `request_context` | Service is clear, but appKey/requestId/time context is missing. | `appKey`, `requestId`, optional error time. |
+| `request_context` | Service is clear, but appKey/requestId/time context is missing. | `requestId`, `appKey`, optional `time` in `2026年7月2日 10:30` format. |
 
 ## Service Clarification
 
@@ -63,7 +63,7 @@ Ask when all conditions are true:
 Template:
 
 ```text
-线上 demo 检测暂未发现服务整体异常。请提供 appKey 和 requestId，如果方便也请补充报错时间，方便客服进一步排查。
+线上 demo 检测暂未发现服务整体异常。请提供 requestId、appKey、time 等信息，方便客服进一步排查。time 给一个大约模糊有误差的时间即可，但必须是 2026年7月2日 10:30 这种格式；如果暂时没有时间也可以先提供 requestId 或 appKey。
 ```
 
 State:
@@ -82,7 +82,7 @@ State:
 | Previous `waitingFor` | If user provides required info | If still missing |
 |---|---|---|
 | `service` | Resolve service again, then continue the original scenario. | Ask again for the concrete registered service. |
-| `request_context` | Query logs, send ERP, notify user, finish. | Ask again for appKey/requestId; if the user says they cannot provide them, send ERP with a missing-context summary and finish. |
+| `request_context` | If `requestId` or `appKey` is available, query logs, send ERP/POPo with `logResult`, then finish without Qiyu confirmation. | Ask once for at least one of requestId/appKey; if the user clearly cannot provide either, finish without log query. |
 
 ## Safety Rules
 
@@ -96,7 +96,7 @@ State:
 
 | Mistake | Correct behavior |
 |---|---|
-| Asking multiple questions at once | Ask for only the missing field needed to continue. |
+| Asking unrelated questions at once | Ask only for requestId, appKey, and optional time in the required format. |
 | Asking for requestId before service resolution | Resolve or clarify service first. |
 | Ending because the service is still unclear | Keep `waitingFor=service` and ask for a concrete registered service. |
 | Returning clarification text without Qiyu send | Call `qiyu_send_message`, then `paas_finish_decision`. |
