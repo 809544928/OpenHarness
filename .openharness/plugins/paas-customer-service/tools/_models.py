@@ -14,7 +14,7 @@ class ServiceProbeConfig(BaseModel):
     method: Literal["GET", "POST"]
     url: str
     timeout_ms: int = Field(default=3000, alias="timeoutMs", ge=100, le=30000)
-    request_template_ref: str | None = Field(default=None, alias="requestTemplateRef")
+    request_template_ref: str = Field(alias="requestTemplateRef")
 
 
 class ServiceLogConfig(BaseModel):

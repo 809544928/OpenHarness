@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import CONFIG_PATH, load_plugin_module
 
@@ -13,6 +14,29 @@ def test_loads_example_registry_with_three_services():
     assert [service.id for service in registry.list_services()] == ["ocr", "tts", "asr"]
     assert registry.get("ocr").display_name == "OCR 文字识别"
     assert registry.get("tts").manual_url == "https://ai.youdao.com/DOCSIRMA/html/tts/api/yyhc/index.html"
+
+
+def test_registry_requires_probe_request_template_ref(tmp_path):
+    config_path = tmp_path / "services.yaml"
+    config_path.write_text(
+        """
+services:
+  - id: ocr
+    displayName: OCR 文字识别
+    aliases: [ocr]
+    manualUrl: https://docs.example.com/ocr/quickstart
+    probe: {type: http, method: POST, url: https://api.example.com/ocr/demo, timeoutMs: 3000}
+    log: {stream_name: paas-ocr}
+    erp: {product: paas-ocr, message: OCR issue}
+""".strip(),
+        encoding="utf-8",
+    )
+    registry_module = load_plugin_module("_service_registry")
+
+    with pytest.raises(ValidationError) as exc_info:
+        registry_module.load_service_registry(config_path)
+
+    assert "requestTemplateRef" in str(exc_info.value)
 
 
 def test_resolves_service_by_alias_in_message():
@@ -58,14 +82,14 @@ services:
     displayName: OCR 文字识别
     aliases: [接口]
     manualUrl: https://docs.example.com/ocr/quickstart
-    probe: {type: http, method: POST, url: https://api.example.com/ocr/demo, timeoutMs: 3000}
+    probe: {type: http, method: POST, url: https://api.example.com/ocr/demo, timeoutMs: 3000, requestTemplateRef: ocr-default}
     log: {stream_name: paas-ocr}
     erp: {product: paas-ocr, message: OCR issue}
   - id: tts
     displayName: TTS 语音合成
     aliases: [接口]
     manualUrl: https://docs.example.com/tts/quickstart
-    probe: {type: http, method: POST, url: https://api.example.com/tts/demo, timeoutMs: 3000}
+    probe: {type: http, method: POST, url: https://api.example.com/tts/demo, timeoutMs: 3000, requestTemplateRef: tts-default}
     log: {stream_name: paas-tts}
     erp: {product: paas-tts, message: TTS issue}
 """.strip(),
