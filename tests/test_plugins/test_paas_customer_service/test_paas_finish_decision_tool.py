@@ -70,6 +70,51 @@ async def test_finish_decision_includes_recorded_assistant_messages(tool_context
 
 
 @pytest.mark.asyncio
+async def test_finish_decision_preserves_compact_log_result_without_qiyu_message(tool_context):
+    module = load_plugin_module("paas_finish_decision_tool")
+    tool = module.PaaSFinishDecisionTool()
+    log_result = {
+        "serviceId": "ocr",
+        "streamName": "aicloud_ocr",
+        "queryInfo": "aabbccdd",
+        "queryInfoSource": "requestId",
+        "time": "2026年7月2日 16:30",
+        "timeFallback": False,
+        "startTime": 1782979200000000,
+        "endTime": 1782982800000000,
+        "mock": False,
+        "hits": [],
+    }
+    args = module.PaaSFinishDecisionInput(
+        conversationId="qiyu:6383959733",
+        action="erp_sent",
+        toolResults=[
+            {"tool": "paas_query_logs", "success": True, "summary": "queried logs; hits=0"},
+            {"tool": "paas_send_erp_message", "success": True, "summary": "sent ERP"},
+        ],
+        newState={
+            "scenario": "service_error",
+            "serviceId": "ocr",
+            "waitingFor": None,
+            "probeResult": {"available": True},
+            "logResult": log_result,
+            "erpSent": True,
+            "terminal": True,
+            "terminalReason": "erp_sent_after_log_query",
+        },
+        terminal=True,
+    )
+
+    result = await tool.execute(args, tool_context)
+    payload = json.loads(result.output)
+
+    assert result.is_error is False
+    assert payload["assistantMessages"] == []
+    assert payload["newState"]["logResult"] == log_result
+    assert payload["newState"]["terminalReason"] == "erp_sent_after_log_query"
+
+
+@pytest.mark.asyncio
 async def test_finish_decision_rejects_terminal_mismatch(tool_context):
     module = load_plugin_module("paas_finish_decision_tool")
     tool = module.PaaSFinishDecisionTool()

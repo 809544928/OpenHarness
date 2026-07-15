@@ -73,8 +73,7 @@ async def test_query_logs_posts_o2log_request_with_request_id_time_window(tool_c
         "startTime": 1782957600000000,
         "endTime": 1782961200000000,
         "mock": False,
-        "response": {"hits": [{"body": "raw log"}], "total": 1},
-        "errorType": None,
+        "hits": [{"body": "raw log"}],
     }
 
 
@@ -169,7 +168,7 @@ async def test_query_logs_defaults_to_previous_120_minutes_for_invalid_time(tool
 
 
 @pytest.mark.asyncio
-async def test_query_logs_returns_raw_response_null_on_http_failure(tool_context, monkeypatch):
+async def test_query_logs_returns_empty_hits_and_query_error_on_http_failure(tool_context, monkeypatch):
     module = load_plugin_module("paas_query_logs_tool")
 
     async def fake_safe_http_json(method, url, *, timeout_ms, json_body=None, headers=None, max_sample_chars=500):
@@ -192,8 +191,21 @@ async def test_query_logs_returns_raw_response_null_on_http_failure(tool_context
     payload = json.loads(result.output)
 
     assert result.is_error is False
-    assert payload["response"] is None
-    assert payload["errorType"] == "timeout"
+    assert payload == {
+        "serviceId": "ocr",
+        "streamName": "aicloud_ocr",
+        "queryInfo": "req-123",
+        "queryInfoSource": "requestId",
+        "time": "2026年7月2日 10:30",
+        "timeFallback": False,
+        "startTime": 1782957600000000,
+        "endTime": 1782961200000000,
+        "mock": False,
+        "hits": [],
+        "queryError": {"type": "timeout"},
+    }
+    assert "response" not in payload
+    assert "errorType" not in payload
     assert "summary" not in payload
     assert "highlights" not in payload
 
@@ -214,8 +226,116 @@ async def test_query_logs_mock_shape_matches_real_shape(tool_context, monkeypatc
     assert payload["queryInfo"] == "req-123"
     assert payload["queryInfoSource"] == "requestId"
     assert payload["mock"] is True
-    assert payload["response"] == {"mock": True, "hits": []}
-    assert payload["errorType"] is None
+    assert payload["hits"] == []
+    assert "response" not in payload
+    assert "errorType" not in payload
+
+
+@pytest.mark.asyncio
+async def test_query_logs_extracts_only_hits_from_o2log_response(tool_context, monkeypatch):
+    module = load_plugin_module("paas_query_logs_tool")
+    o2log_response = {
+        "took": 755,
+        "took_detail": {
+            "total": 755,
+            "cache_took": 0,
+            "file_list_took": 0,
+            "wait_in_queue": 18,
+            "idx_took": 0,
+            "search_took": 736,
+        },
+        "hits": [],
+        "total": 0,
+        "from": 0,
+        "size": 1000,
+        "cached_ratio": 100,
+        "scan_size": 1335,
+        "idx_scan_size": 115,
+        "scan_records": 2896052,
+        "trace_id": "019f221672117b20ad3b213339ebf8d5",
+        "is_partial": False,
+        "result_cache_ratio": 0,
+        "order_by": "desc",
+        "order_by_metadata": [["_timestamp", "desc"]],
+        "is_histogram_eligible": True,
+        "peak_memory_usage": 0.0,
+    }
+
+    async def fake_safe_http_json(method, url, *, timeout_ms, json_body=None, headers=None, max_sample_chars=500):
+        return _safe_result(module, o2log_response)
+
+    monkeypatch.setattr(module, "safe_http_json", fake_safe_http_json)
+    tool = module.PaaSQueryLogsTool()
+    args = module.PaaSQueryLogsInput(
+        serviceId="ocr",
+        appKey="app_abcdef",
+        requestId="aabbccdd",
+        time="2026年7月2日 16:30",
+    )
+
+    result = await tool.execute(args, tool_context)
+    payload = json.loads(result.output)
+
+    assert result.is_error is False
+    assert payload == {
+        "serviceId": "ocr",
+        "streamName": "aicloud_ocr",
+        "queryInfo": "aabbccdd",
+        "queryInfoSource": "requestId",
+        "time": "2026年7月2日 16:30",
+        "timeFallback": False,
+        "startTime": 1782979200000000,
+        "endTime": 1782982800000000,
+        "mock": False,
+        "hits": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_query_logs_preserves_non_empty_hits(tool_context, monkeypatch):
+    module = load_plugin_module("paas_query_logs_tool")
+    hits = [
+        {"body": "requestId=req-123 status=500", "_timestamp": 1782959400000000},
+        {"body": "requestId=req-123 retry=false", "_timestamp": 1782959399000000},
+    ]
+
+    async def fake_safe_http_json(method, url, *, timeout_ms, json_body=None, headers=None, max_sample_chars=500):
+        return _safe_result(module, {"hits": hits, "total": 2, "trace_id": "trace-ignored"})
+
+    monkeypatch.setattr(module, "safe_http_json", fake_safe_http_json)
+    tool = module.PaaSQueryLogsTool()
+    args = module.PaaSQueryLogsInput(serviceId="ocr", appKey="app", requestId="req-123", time="2026年7月2日 10:30")
+
+    result = await tool.execute(args, tool_context)
+    payload = json.loads(result.output)
+
+    assert result.is_error is False
+    assert payload["hits"] == hits
+    assert "response" not in payload
+    assert "trace_id" not in payload
+    assert "total" not in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{}, {"hits": None}, {"hits": {"body": "not-list"}}, {"hits": "not-list"}])
+async def test_query_logs_returns_empty_hits_for_malformed_hits(tool_context, monkeypatch, body):
+    module = load_plugin_module("paas_query_logs_tool")
+
+    async def fake_safe_http_json(method, url, *, timeout_ms, json_body=None, headers=None, max_sample_chars=500):
+        return _safe_result(module, body)
+
+    monkeypatch.setattr(module, "safe_http_json", fake_safe_http_json)
+    tool = module.PaaSQueryLogsTool()
+    args = module.PaaSQueryLogsInput(serviceId="ocr", appKey="app", requestId="req-123", time="2026年7月2日 10:30")
+
+    result = await tool.execute(args, tool_context)
+    payload = json.loads(result.output)
+
+    assert result.is_error is False
+    assert payload["hits"] == []
+    assert payload["queryError"] == {"type": "invalid_o2log_response"}
+    assert "response" not in payload
+    assert "errorType" not in payload
 
 
 def test_query_logs_schema_rejects_raw_query_and_time_range():

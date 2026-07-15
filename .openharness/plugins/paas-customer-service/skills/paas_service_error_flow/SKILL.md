@@ -21,7 +21,7 @@ For service errors, resolve the service first. Once service is clear, probe the 
 |---|---|
 | `paas_resolve_service` | Resolve the affected registered service. |
 | `paas_probe_service` | Check the standard demo endpoint health. |
-| `paas_query_logs` | Query raw o2log details using structured request context. |
+| `paas_query_logs` | Query o2log by structured request context and return compact query context plus `hits`. |
 | `paas_send_erp_message` | Send a safe summary to ERP or the internal ticket system. |
 | `qiyu_send_message` | Notify or clarify with the user. |
 | `paas_finish_decision` | Finish with Java-parseable structured result. |
@@ -115,13 +115,23 @@ State:
   "waitingFor": null,
   "logResult": {
     "serviceId": "<serviceId>",
-    "response": {}
+    "streamName": "<streamName>",
+    "queryInfo": "<requestId-or-appKey>",
+    "queryInfoSource": "requestId",
+    "hits": []
   },
   "erpSent": true,
   "terminal": true,
   "terminalReason": "erp_sent_after_log_query"
 }
 ```
+
+Log result semantics:
+
+1. `logResult.hits` is the only field that represents matched user request logs.
+2. `hits=[]` means no matching logs were found. It is not evidence of user business auth failure, request failure, service failure, invalid appKey, or signature error.
+3. `queryError`, if present, describes the log-platform query itself, not the user's PaaS API call. For example, `queryError.type=auth_error` means o2log query authentication failed; it does not mean OCR/TTS/ASR authentication failed.
+4. Only summarize a business error when a concrete item inside `hits` explicitly contains that error.
 
 ## Flow E: User Cannot Provide RequestId Or AppKey
 
@@ -144,11 +154,12 @@ If the user says they cannot provide both requestId and appKey:
 1. Do not send ERP before probe if service is clear.
 2. Do not ask for requestId before probe.
 3. If probe fails, do not ask user for requestId and do not call `qiyu_send_message`; send ERP and finish silently.
-4. If logs fail, still send ERP with `logResult` containing the query failure fields.
-5. After ERP submission from the log-query branch, finish without calling `qiyu_send_message`.
-6. Logs must be queried by structured fields only; never pass raw SQL, DSL, Lucene queries, or legacy time range fields.
-7. User-visible messages must not expose raw logs, appKeys, headers, cookies, tokens, signatures, or internal endpoints.
-8. Minimal probe diagnostics are internal and ERP-facing only; probe failure diagnostics must not be sent through `qiyu_send_message`.
+4. If logs fail, still send ERP with the compact `logResult` containing `hits: []` and optional query-level error fields.
+5. After ERP submission from the log-query branch, finish through `paas_finish_decision` without calling `qiyu_send_message`.
+6. After `paas_query_logs`, only inspect `logResult.hits` as the matched log list; do not infer business errors from empty hits, query metadata, query errors, HTTP/tool errors, or missing logs.
+7. Logs must be queried by structured fields only; never pass raw SQL, DSL, Lucene queries, or legacy time range fields.
+8. User-visible messages must not expose raw logs, appKeys, headers, cookies, tokens, signatures, or internal endpoints.
+9. Minimal probe diagnostics are internal and ERP-facing only; probe failure diagnostics must not be sent through `qiyu_send_message`.
 
 ## Common Mistakes
 
@@ -158,4 +169,5 @@ If the user says they cannot provide both requestId and appKey:
 | Probe failed → ask user for more info | Send ERP and finish silently without Qiyu. |
 | Probe failed → notify user through `qiyu_send_message` | Do not send a Qiyu message for probe failure; only ERP is sent. |
 | Probe normal + no requestId → query logs anyway | Ask for request context. |
+| `paas_query_logs` returns `hits=[]` → summarize auth failure | Treat this as “no matching logs found”; send ERP and finish without user-facing diagnosis. |
 | Logs unavailable → abandon case | Send ERP with safe failure summary. |

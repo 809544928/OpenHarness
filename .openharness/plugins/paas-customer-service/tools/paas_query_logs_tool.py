@@ -76,8 +76,7 @@ class PaaSQueryLogsTool(BaseTool):
                     time_text=arguments.time_text,
                     window=window,
                     mock=True,
-                    response={"mock": True, "hits": []},
-                    error_type=None,
+                    result=None,
                 )
             )
 
@@ -99,8 +98,7 @@ class PaaSQueryLogsTool(BaseTool):
                 time_text=arguments.time_text,
                 window=window,
                 mock=False,
-                response=result.json_body if result.ok else None,
-                error_type=None if result.ok else result.error_type,
+                result=result,
             )
         )
 
@@ -176,10 +174,9 @@ def _build_output(
     time_text: str | None,
     window: _TimeWindow,
     mock: bool,
-    response: dict[str, Any] | None,
-    error_type: str | None,
+    result: SafeHttpResult | None,
 ) -> dict[str, Any]:
-    return {
+    output: dict[str, Any] = {
         "serviceId": service_id,
         "streamName": stream_name,
         "queryInfo": query_info,
@@ -189,6 +186,25 @@ def _build_output(
         "startTime": window.start_time,
         "endTime": window.end_time,
         "mock": mock,
-        "response": response,
-        "errorType": error_type,
+        "hits": _extract_hits(result.json_body if result and result.ok else None),
     }
+    if result is not None:
+        query_error = _query_error(result)
+        if query_error is not None:
+            output["queryError"] = query_error
+    return output
+
+
+def _extract_hits(response: dict[str, Any] | None) -> list[Any]:
+    if response is None:
+        return []
+    hits = response.get("hits")
+    return hits if isinstance(hits, list) else []
+
+
+def _query_error(result: SafeHttpResult) -> dict[str, str] | None:
+    if not result.ok:
+        return {"type": result.error_type or "http_error"}
+    if not isinstance(result.json_body, dict) or not isinstance(result.json_body.get("hits"), list):
+        return {"type": "invalid_o2log_response"}
+    return None

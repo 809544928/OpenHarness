@@ -223,6 +223,58 @@ async def test_qiyu_send_message_allows_long_content(tool_context, monkeypatch):
     assert payload == {"sent": True, "mock": False}
 
 
+@pytest.mark.asyncio
+async def test_qiyu_send_message_mock_returns_success_without_http(tool_context, monkeypatch):
+    monkeypatch.setenv("QIYU_SEND_MESSAGE_MOCK", "true")
+    module = load_plugin_module("qiyu_send_message_tool")
+    calls = []
+
+    async def fake_safe_http_json(method, url, *, timeout_ms, json_body=None, headers=None):
+        calls.append(
+            {
+                "method": method,
+                "url": url,
+                "timeout_ms": timeout_ms,
+                "json_body": json_body,
+                "headers": headers,
+            }
+        )
+        return module.SafeHttpResult(
+            ok=True,
+            status_code=200,
+            latency_ms=12,
+            error_type="ok",
+            response_sample='{"code":200}',
+            json_body={"code": 200},
+            content_type="application/json",
+            response_kind="json",
+        )
+
+    monkeypatch.setattr(module, "safe_http_json", fake_safe_http_json)
+    tool = module.QiyuSendMessageTool()
+    args = module.QiyuSendMessageInput(
+        conversationId="qiyu:mock-success",
+        platformSessionId="mock-success",
+        platformUserId="user-1",
+        content="请补充 requestId。",
+    )
+
+    result = await tool.execute(args, tool_context)
+    payload = json.loads(result.output)
+
+    assert result.is_error is False
+    assert payload == {"sent": True, "mock": True}
+    assert calls == []
+
+    turn_messages = __import__("_turn_messages")
+    assert turn_messages.consume_assistant_messages("qiyu:mock-success") == [
+        {
+            "role": "assistant",
+            "content": "请补充 requestId。",
+        }
+    ]
+
+
 def test_qiyu_send_message_rejects_empty_content():
     module = load_plugin_module("qiyu_send_message_tool")
 

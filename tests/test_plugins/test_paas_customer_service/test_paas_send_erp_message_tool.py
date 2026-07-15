@@ -44,7 +44,7 @@ async def test_send_erp_message_posts_popo_payload_to_default_endpoint(tool_cont
             "serviceId": "ocr",
             "streamName": "aicloud_ocr",
             "queryInfo": "req-123",
-            "response": {"hits": [{"body": "raw log"}]},
+            "hits": [{"body": "raw log"}],
         },
         platformContext={
             "conversationId": "qiyu:6383959733",
@@ -69,7 +69,7 @@ async def test_send_erp_message_posts_popo_payload_to_default_endpoint(tool_cont
             "处理说明: 用户反馈 OCR 服务异常，请客服结合 probe 和日志摘要跟进。\n"
             "用户摘要: 用户 appKey app_abcdef OCR 报 401\n"
             "Probe摘要: probe unavailable: serviceId=ocr, statusCode=500\n"
-            "日志结果: {\"serviceId\":\"ocr\",\"streamName\":\"aicloud_ocr\",\"queryInfo\":\"req-123\",\"response\":{\"hits\":[{\"body\":\"raw log\"}]}}\n"
+            "日志结果: {\"serviceId\":\"ocr\",\"streamName\":\"aicloud_ocr\",\"queryInfo\":\"req-123\",\"hits\":[{\"body\":\"raw log\"}]}\n"
             "会话: qiyu:6383959733\n"
             "平台会话: 6383959733\n"
             "平台用户: user-1"

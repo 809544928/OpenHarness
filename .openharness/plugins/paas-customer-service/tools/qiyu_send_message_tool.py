@@ -44,6 +44,10 @@ class QiyuSendMessageTool(BaseTool):
 
     async def execute(self, arguments: QiyuSendMessageInput, context: ToolExecutionContext) -> ToolResult:
         del context
+        if _is_qiyu_send_message_mock_enabled():
+            record_assistant_message(arguments.conversation_id, arguments.content)
+            return json_success({"sent": True, "mock": True})
+
         body = {
             "uid": _qiyu_uid(arguments.platform_user_id),
             "sessionId": arguments.platform_session_id,
@@ -72,6 +76,10 @@ class QiyuSendMessageTool(BaseTool):
             )
         record_assistant_message(arguments.conversation_id, arguments.content)
         return json_success({"sent": True, "mock": False})
+
+
+def _is_qiyu_send_message_mock_enabled() -> bool:
+    return (get_env("QIYU_SEND_MESSAGE_MOCK") or "").strip().lower() == "true"
 
 
 def _resolve_qiyu_endpoint() -> str:
