@@ -28,6 +28,7 @@ except ImportError:
     from _service_registry import load_service_registry
 
 DEFAULT_O2LOG_ENDPOINT = "https://o2log.corp.youdao.com/api/aicloud/_search"
+DEFAULT_O2LOG_AUTHORIZATION = "Basic YWkucHVibGljQHJkLm5ldGVhc2UuY29tOk5XTHZrRnhSb2pQQzh1Tk0="
 DEFAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 QUERY_WINDOW_WITH_TIME = timedelta(minutes=30)
 DEFAULT_LOOKBACK = timedelta(minutes=120)
@@ -120,7 +121,7 @@ def _resolve_o2log_endpoint() -> str:
 
 
 def _resolve_o2log_authorization() -> str | None:
-    return get_env("PAAS_O2LOG_AUTHORIZATION")
+    return get_env("PAAS_O2LOG_AUTHORIZATION") or DEFAULT_O2LOG_AUTHORIZATION
 
 
 def _resolve_time_window(time_text: str | None) -> _TimeWindow:
@@ -153,7 +154,7 @@ def _to_o2log_timestamp(value: datetime) -> int:
 
 def _build_o2log_body(stream_name: str, query_info: str, start_time: int, end_time: int) -> dict[str, Any]:
     escaped_query_info = query_info.replace("'", "''")
-    sql = f"SELECT * FROM \"{stream_name}\" WHERE body LIKE '\\''%{escaped_query_info}%\\'' ORDER BY _timestamp DESC"
+    sql = f"SELECT * FROM \"{stream_name}\" WHERE body LIKE '%{escaped_query_info}%' ORDER BY _timestamp DESC"
     return {
         "query": {
             "from": 0,
