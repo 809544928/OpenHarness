@@ -1,631 +1,594 @@
-# PaaS 智能客服最小闭环 SDD
+# PaaS Customer Service OpenHarness 插件 SDD
 
-## 1. 背景
+## 1. 文档定位
 
-平台 A 在第一版中明确为七鱼客服平台。用户通过七鱼咨询 PaaS 服务，例如 OCR、TTS、ASR 等。当前目标是在人工客服前增加一层智能客服预处理能力，但 Java 层必须尽可能薄：Java 只接收七鱼 webhook、做七鱼协议校验、最小去重和内存态桥接，然后调用本地 OpenHarness。
+本文档描述 OpenHarness 插件 `.openharness/plugins/paas-customer-service` 的当前技术设计。该插件是 PaaS 智能客服预处理的业务核心，负责识别用户意图、解析服务、追问缺失信息、获取接入文档、探测在线 demo、查询 o2log、提交 ERP/POPo 跟进，以及通过七鱼发送用户可见消息。
 
-客服业务流程、用户可见话术、七鱼主动发消息、ERP、probe、日志查询和后续告警全部沉淀到 OpenHarness Skill/Tool 中。Java 与 OpenHarness 之间只保持稳定、简洁的输入输出协议，避免把客服业务重新写回 Java。
+Java 侧不是本文档主体。Java 侧只作为 webhook 入口和 OpenHarness 调用桥：接收七鱼事件、完成平台协议处理、构造当前轮输入、调用本地 `oh`、保存插件返回的 `newState`，并在下一轮作为 `agentState` 原样传回。客服业务判断、用户话术、probe、日志查询、ERP/POPo 升级均由 OpenHarness 插件完成。
 
-本 SDD 与外部 PRD `/Users/admin/IdeaProjects/reactive_proxy_gateway/sdd/prd/intelligent-customer-service-prd.md` 对齐，描述当前最小闭环的设计边界。OpenHarness Skill/Tool 的具体实现不在 Java 工程内，但本文件定义 Java 与 OpenHarness 的职责分工、协议和验收标准。
-
-## 2. 最小闭环目标
-
-### 2.1 Java 目标
-
-Java 只负责：
-
-1. 暴露七鱼 webhook 接口。
-2. 处理七鱼 URL 验证。
-3. 校验七鱼事件推送签名和时间戳。
-4. 解析七鱼事件 JSON。
-5. 只处理有效文本访客消息。
-6. 用当前 JVM 内存做最小会话历史和消息去重。
-7. 构造最小 OpenHarness 输入 JSON。
-8. 调用本地 `oh` 命令。
-9. 解析最小 OpenHarness 输出 JSON。
-10. 保存 `newState` 和 `terminal`。
-11. 返回七鱼 webhook ACK。
-
-### 2.2 Java 明确不负责
-
-Java 第一版不负责：
-
-1. 不识别服务。
-2. 不判断业务场景。
-3. 不维护服务清单、别名或文档 URL。
-4. 不生成用户可见话术。
-5. 不调用七鱼发送消息 API。
-6. 不调用七鱼会话升级 API。
-7. 不发送异常兜底消息。
-8. 不发送 ERP 消息。
-9. 不解析 `newState` 内部业务字段做流程分支。
-10. 不保存平台动作明细对象。
-11. 不保存 OpenHarness 调用摘要对象。
-12. 不执行 demo probe。
-13. 不查询日志系统。
-14. 不承载客服排障编排。
-
-### 2.3 OpenHarness 目标
-
-OpenHarness 负责：
-
-1. 判断用户意图、服务和场景。
-2. 决定是否追问。
-3. 查询接入文档。
-4. probe 服务。
-5. 查询日志。
-6. 发送 ERP 或内部工单消息。
-7. 生成用户可见文本。
-8. 通过 `qiyu_send_message` Tool 给七鱼用户发消息。
-9. 通过 `paas_send_erp_message` Tool 提交客服人员跟进。
-10. 返回最小结构化摘要给 Java。
-
-## 3. 最终职责边界
-
-### 3.1 Java 服务职责
-
-Java 层只做基础设施和状态桥接，不做客服业务判断：
-
-- 接收七鱼 URL 验证请求和事件推送请求。
-- 校验七鱼 `appkey`、签名、时间戳、nonce 或 checksum。
-- 解析七鱼 `CLIENT_MESSAGE` 事件。
-- 只接受 `msgtype=TEXT`、`status=1`、`content` 非空且字段完整的访客消息。
-- 将七鱼 `session_id` 映射为内部 `conversationId = qiyu:{session_id}`。
-- 使用当前 JVM 内存保存最近访客消息 history、OpenHarness 返回的 `agentState` 和 `terminal`。
-- 使用 `processedMessageKeys` 对 `platformMessageId` 做最小去重。
-- 组装 OpenHarness 最小输入 JSON。
-- 通过本地 `oh` 命令调用 OpenHarness。
-- 解析 OpenHarness 最小输出 JSON。
-- 原样保存 `newState`，保存 `terminal`。
-- 返回七鱼 webhook ACK。
-
-Java 不把 OpenHarness 输出转换为用户消息；用户可见消息必须由 OpenHarness 通过七鱼 Tool 主动发送。
-
-### 3.2 OpenHarness 职责
-
-OpenHarness 负责完整客服业务流程：
-
-- 理解用户问题。
-- 判断问题是否明确。
-- 服务不明确时决定追问。
-- 判断接入文档、服务报错、其他咨询、ERP 跟进等场景。
-- 接入咨询场景：匹配服务并通过七鱼 Tool 发送文档说明。
-- 错误反馈场景：按规则调用 demo probe；probe 异常时仅发 ERP 或内部工单并静默结束；probe 正常但缺少上下文时追问 appKey/requestId；收到上下文后查询日志、发 ERP 或内部工单并通知用户。
-- 需要客服人员跟进时，通过 `paas_send_erp_message` Tool 提交 ERP 消息。
-- 其他场景：直接结束，不调用 probe、日志、ERP 或转接能力。
-- 输出 `action`、`toolResults`、`newState`、`terminal` 等最小 JSON 摘要给 Java。
-
-### 3.3 关键约束
-
-由于本方案不做常驻 bridge，每次 `oh` 调用都是单次执行。Java 必须每次传入：
-
-- `conversationId`
-- `platformSessionId`
-- `platformUserId`
-- `staffId`
-- 当前访客文本 `message`
-- 最近访客消息 `history`
-- 上轮 `agentState`
-
-OpenHarness 不应依赖 Java 进程内业务判断，也不能假设自己拥有跨调用的内存状态。跨轮客服状态必须通过 `newState` 返回 Java，再由 Java 在下一轮作为 `agentState` 原样传回。
-
-## 4. 最小闭环流程
+## 2. 插件目录
 
 ```text
-七鱼 CLIENT_MESSAGE
-  ↓
-Java Controller 校验签名、解析 JSON
-  ↓
-构造 QiyuCallbackEvent
-  ↓
-AiCustomerServiceExecutor
-  ├─ 过滤事件
-  ├─ processedMessageKeys.putIfAbsent 去重
-  ├─ conversations.computeIfAbsent 获取上下文
-  ├─ 追加 HistoryMessage
-  └─ 调用 OpenHarnessClient
-       ↓
-     OpenHarnessClient
-       ├─ 构造最小 input JSON
-       ├─ 写临时文件
-       ├─ 调用 oh
-       └─ 解析最小 output JSON
-          ↓
-OpenHarness Skill/Tool 编排客服流程
-  ├─ 必要时 qiyu_send_message 给用户发消息（probe 异常 ERP 分支除外）
-  ├─ 必要时通过 paas_send_erp_message 提交客服人员跟进
-  ├─ 必要时 paas_probe_service / paas_query_logs / paas_send_erp_message
-  └─ 返回最小结构化摘要
-          ↓
-Java 保存 newState 和 terminal
-  ↓
-Java 返回七鱼 webhook ACK
+.openharness/plugins/paas-customer-service/
+  plugin.json
+  config/
+    paas-services.example.yaml
+  skills/
+    paas_customer_service_router/SKILL.md
+    paas_intent_classifier/SKILL.md
+    paas_service_resolver/SKILL.md
+    paas_access_docs_flow/SKILL.md
+    paas_service_error_flow/SKILL.md
+    paas_clarification_policy/SKILL.md
+    paas_response_composer/SKILL.md
+    services/ocr/SKILL.md
+    services/tts/SKILL.md
+    services/asr/SKILL.md
+  tools/
+    _config.py
+    _errors.py
+    _http.py
+    _models.py
+    _service_registry.py
+    _turn_messages.py
+    _youdao_auth.py
+    _youdao_probe.py
+    paas_resolve_service_tool.py
+    paas_get_manual_url_tool.py
+    paas_probe_service_tool.py
+    paas_query_logs_tool.py
+    paas_send_erp_message_tool.py
+    qiyu_send_message_tool.py
+    paas_finish_decision_tool.py
 ```
 
-Java 返回 ACK 只代表七鱼 webhook 已接收，不代表客服消息一定由 Java 发出。客服用户消息是否已发送、是否 ERP 升级，均由 OpenHarness Tool 决定并在 `toolResults` 中返回摘要。
+`plugin.json` 声明插件名为 `paas-customer-service`，版本为 `1.0.0`，默认启用，并分别从 `skills` 和 `tools` 目录加载技能和工具。
 
-## 5. 七鱼 webhook 需求
+## 3. 总体职责边界
 
-### 5.1 URL 验证
+### 3.1 OpenHarness 插件负责
 
-七鱼控制台保存回调 URL 时会发送验证请求：
+1. 将当前客服消息分类为 `access_docs`、`service_error` 或 `other`。
+2. 通过服务注册表解析用户提到的 PaaS 服务，禁止模型自行发明 `serviceId`。
+3. 在服务不明确或请求上下文缺失时，通过七鱼追问用户。
+4. 在接入文档场景中获取注册表里的文档 URL，并通过七鱼发送给用户。
+5. 在服务报错场景中先对标准 demo endpoint 做 probe。
+6. 在 probe 异常时提交 ERP/POPo 跟进，并对用户静默结束该分支。
+7. 在 probe 正常但缺少 `requestId` 或 `appKey` 时追问请求上下文。
+8. 在拿到请求上下文后查询 o2log，提交带 `logResult` 的 ERP/POPo 消息。
+9. 每轮都通过 `paas_finish_decision` 返回 Java 可解析的结构化结果。
+10. 控制用户可见文本的安全边界，避免泄露日志、token、签名、headers、appSecret、内部 URL 或原始异常。
 
-```http
-POST https://{服务域名}/ai_customer_service/notify?appkey=APP_KEY&time=13500001234&nonce=123412323&echostr=ENCRYPT_STR&checksum=RTYUQWEXZCVAQFASDFASCYR
-```
+### 3.2 Java 侧只负责
 
-Java 行为：
+1. 接收七鱼 webhook 和 URL 验证请求。
+2. 过滤非文本、无效状态、重复消息等平台事件。
+3. 将七鱼会话 ID 映射为 `conversationId`，例如 `qiyu:6383959733`。
+4. 将当前文本、最近历史、平台标识和上一轮 `agentState` 传给 OpenHarness。
+5. 调用本地 `oh` 执行插件流程。
+6. 保存 OpenHarness 输出的 `newState` 和 `terminal`。
+7. 下一轮把保存的 `newState` 作为 `agentState` 传回。
+8. 返回七鱼 webhook ACK。
 
-1. URL decode `echostr`。
-2. 校验 `appkey`、`time`、`nonce`、`echostr`、`checksum`。
-3. 解密 `echostr` 得到明文。
-4. 在 1 秒内直接返回明文字符串。
-5. 返回内容不能加引号，不能带 BOM，不能带换行，不能包裹 `code` 字段。
+Java 不解析 `newState` 内部业务字段做客服分支，不生成用户可见话术，不调用 probe、日志、ERP/POPo，也不发送业务兜底消息。
 
-### 5.2 事件推送
+## 4. Java 输入与插件输出契约
 
-正式事件推送示例：
+### 4.1 输入 JSON
 
-```http
-POST https://{服务域名}/ai_customer_service/notify?appkey=APP_KEY&eventType=CLIENT_MESSAGE&time=162593272&checksum=CHECKSUM&checksumAlgorithm=0
-```
-
-`CLIENT_MESSAGE` 示例：
-
-```json
-{
-  "createtime": 1625932727657,
-  "msgidclient": "6383959733#0#36946076bba94a2bb0780bf748606f8c",
-  "session_id": 6383959733,
-  "content": "OCR 服务一直报 401，帮我看下",
-  "from_user": 1,
-  "foreign_id": "81275614-ff4c-490e-9517-0934f4fc9325@顺风车乘客",
-  "autoreply": 0,
-  "user_id": 20627473396,
-  "staff_id": 4126122,
-  "id": 31050959281,
-  "updatetime": 1625932727657,
-  "corp_id": 3517575,
-  "msgtype": "TEXT",
-  "status": 1
-}
-```
-
-关键字段：
-
-| 字段 | 规则 |
-|---|---|
-| `session_id` | 生成 `conversationId = qiyu:{session_id}`，并作为 `platformSessionId` 传给 OpenHarness。 |
-| `foreign_id` | 作为 `platformUserId` 传给 OpenHarness；不存在或为空时传空字符串 `""`。 |
-| `user_id` | 七鱼内部访客 ID，不作为 `platformUserId`，不传给 OpenHarness。 |
-| `staff_id` | 转为字符串作为 `staffId`；不存在时为空字符串。 |
-| `msgidclient` / `id` | `platformMessageId = msgidclient 非空 ? msgidclient : String.valueOf(id)`，仅 Java 去重使用，不传给 OpenHarness。 |
-| `content` | 当前访客文本消息。 |
-| `msgtype` | 第一版只处理 `TEXT`。 |
-| `status` | 第一版只处理 `1`。 |
-
-## 6. 事件处理规则
-
-| 事件类型 | Java 行为 |
-|---|---|
-| `CLIENT_MESSAGE` | 仅当 `msgtype=TEXT`、`status=1`、`content` 非空时调用 OpenHarness。 |
-| `STAFF_MESSAGE` | 第一版 ACK，不调用 OpenHarness；可选写入 history 或标记 erp_followup，默认不做。 |
-| `CLIENT_MARK_READ` | ACK，不调用 OpenHarness。 |
-| 其他事件 | ACK，不调用 OpenHarness。 |
-
-忽略类消息包括：
-
-1. 非 `CLIENT_MESSAGE`。
-2. `msgtype != TEXT`。
-3. `status != 1`。
-4. `content` 为空或全空白。
-5. 缺少 `session_id`。
-6. 缺少消息 ID。
-7. 会话已 `terminal` 且配置要求忽略终止会话后续消息。
-8. 重复 `platformMessageId`。
-
-忽略类消息只返回 ACK，不调用 OpenHarness，不发送用户消息。
-
-## 7. Java 内存态最小模型
-
-第一版只使用当前 JVM 内存，不接数据库，不接 Redis，不做跨节点共享。服务重启后状态全部丢失。
-
-### 7.1 conversations
-
-```java
-ConcurrentHashMap<String, ConversationContext> conversations
-```
-
-按 `conversationId` 保存会话。
-
-`ConversationContext` 最小字段：
-
-```java
-public class ConversationContext {
-    private String conversationId;
-    private String platformSessionId;
-    private String platformUserId;
-    private String staffId;
-    private List<HistoryMessage> history;
-    private JsonNode agentState;
-    private boolean terminal;
-    private Instant updatedAt;
-    private Instant expiresAt;
-}
-```
-
-说明：
-
-- `platformUserId` 来自七鱼 `foreign_id`，无值时为空字符串。
-- `agentState` 原样保存 OpenHarness 输出的 `newState`。
-- Java 只使用 `terminal` 判断是否继续处理，不读取 `agentState.scenario`、`agentState.serviceId`、`agentState.waitingFor`。
-- 不保存 assistant 消息正文。
-- 不保存 `platformActions`。
-- 不保存调用摘要对象。
-
-### 7.2 history
-
-`HistoryMessage` 最小字段：
-
-```java
-public class HistoryMessage {
-    private String role;
-    private String content;
-}
-```
-
-规则：
-
-1. 默认只保存和传递访客文本消息：`role=user`。
-2. 不保存 OpenHarness 已发送给用户的消息正文。
-3. 按时间升序。
-4. 超过 `maxHistoryMessages` 时保留最近消息。
-5. 超过 `maxHistoryChars` 时从最早消息开始裁剪。
-
-### 7.3 processedMessageKeys
-
-```java
-ConcurrentHashMap<String, Instant> processedMessageKeys
-```
-
-去重规则：
-
-1. `dedupKey = qiyu:{platformMessageId}`。
-2. 使用 `putIfAbsent`，只有首次写入成功才调用 OpenHarness。
-3. 重复消息直接 ACK。
-4. 第一版不记录 `SUCCESS`、`TIMEOUT`、`INVALID_JSON` 等状态对象。
-5. 第一版不做失败自动重试。
-6. 过期清理时按时间删除旧 key。
-
-## 8. OpenHarness 输入 JSON 最小协议
-
-Java 传给 OpenHarness 的 JSON：
+每轮 Java 给 OpenHarness 的输入是一个当前轮上下文对象：
 
 ```json
 {
   "conversationId": "qiyu:6383959733",
   "platformSessionId": "6383959733",
-  "platformUserId": "81275614-ff4c-490e-9517-0934f4fc9325@顺风车乘客",
-  "staffId": "4126122",
-  "message": "OCR 服务一直报 401，帮我看下",
+  "platformUserId": "user-1",
+  "staffId": "staff-1",
+  "message": "OCR 怎么接入？",
   "history": [
-    {
-      "role": "user",
-      "content": "OCR 服务怎么接入？"
-    }
+    {"role": "user", "content": "OCR 怎么接入？"}
   ],
-  "agentState": {
-    "terminal": false
-  }
+  "agentState": {"terminal": false}
 }
 ```
 
-字段说明：
+字段语义：
 
-| 字段 | 说明 |
-|---|---|
-| `conversationId` | Java 内部会话 ID，格式 `qiyu:{session_id}`。 |
-| `platformSessionId` | 七鱼 `session_id` 字符串，供 OpenHarness 七鱼 Tool 使用。 |
-| `platformUserId` | 七鱼 `foreign_id`，无值时为空字符串，不使用 `user_id`。 |
-| `staffId` | 七鱼 `staff_id` 字符串，无值时为空字符串。 |
-| `message` | 当前访客文本消息。 |
-| `history` | 最近访客文本消息列表。 |
-| `agentState` | 上轮 OpenHarness 返回的 `newState`；没有时使用 `{ "terminal": false }`。 |
+| 字段 | 必填 | 说明 |
+|---|---:|---|
+| `conversationId` | 是 | 稳定会话 ID，通常由平台前缀和平台会话 ID 组成。 |
+| `platformSessionId` | 是 | 七鱼原始会话 ID，供 `qiyu_send_message` 定位会话。 |
+| `platformUserId` | 否 | 平台用户标识，供七鱼发送消息和 ERP/POPo 上下文使用。 |
+| `staffId` | 否 | 当前坐席或机器人坐席标识。 |
+| `message` | 是 | 当前访客文本。 |
+| `history` | 否 | 最近对话历史，元素建议包含 `role` 和 `content`。 |
+| `agentState` | 否 | 上一轮插件返回的 `newState`，由 Java 原样传回。 |
 
-明确不传：
+### 4.2 输出 JSON
 
-1. `platform`：第一版固定七鱼，OpenHarness 可从调用入口或 `conversationId` 前缀判断。
-2. `currentMessage.messageType`：Java 已保证只传文本。
-3. `currentMessage.createdAt`：第一版 OpenHarness 不依赖消息时间。
-4. `platformMessageId`：仅 Java 内部去重使用。
-5. `appKey`、`appSecret`、`checksum`。
-6. `rawPayload`。
-7. 七鱼内部 `user_id`。
-8. 服务注册表、服务别名表或文档 URL：这些属于 OpenHarness 侧 Skill/Tool/配置。
-
-## 9. OpenHarness 输出 JSON 最小协议
-
-OpenHarness 返回给 Java 的 JSON：
+每轮插件必须调用 `paas_finish_decision` 产生结构化输出：
 
 ```json
 {
   "conversationId": "qiyu:6383959733",
   "action": "manual_sent",
   "toolResults": [
-    {
-      "tool": "qiyu_send_message",
-      "success": true,
-      "summary": "sent manual message"
-    }
+    {"tool": "paas_resolve_service", "success": true, "summary": "service resolved"},
+    {"tool": "paas_get_manual_url", "success": true, "summary": "manual URL resolved"},
+    {"tool": "qiyu_send_message", "success": true, "summary": "manual message sent"}
+  ],
+  "assistantMessages": [
+    {"role": "assistant", "content": "这是 OCR 文字识别 的接入文档：https://ai.youdao.com/DOCSIRMA/html/ocr/api/tyocr/"}
   ],
   "newState": {
-    "terminal": true
+    "scenario": "access_docs",
+    "serviceId": "ocr",
+    "waitingFor": null,
+    "terminal": true,
+    "terminalReason": "manual_sent"
   },
   "terminal": true
 }
 ```
 
-字段说明：
+`assistantMessages` 由成功的 `qiyu_send_message` 调用记录并在 `paas_finish_decision` 中自动收集。probe 失败后的 ERP/POPo 分支故意不调用 `qiyu_send_message`，因此该分支可以没有用户可见消息。
 
-| 字段 | Java 行为 |
+## 5. 技能编排
+
+### 5.1 `paas_customer_service_router`
+
+顶层路由技能。它定义全局硬规则、Java 输入字段、状态字段、三类场景和完整的每轮执行顺序。所有路径都必须以 `paas_finish_decision` 结束。
+
+关键规则：
+
+1. 外部动作必须通过注册工具完成。
+2. 禁止运行 curl、Bash 或技能中的复制示例。
+3. 禁止发明服务 ID、文档 URL、probe 结果、日志结果、ERP/POPo 结果或七鱼发送结果。
+4. 需要用户可见消息时必须通过 `qiyu_send_message` 发送；probe 失败 ERP/POPo 分支故意不发七鱼消息。
+5. Java 只保存最终结构化结果，不发送业务兜底消息。
+6. `paas_query_logs` 的输出在 request-context 分支中只用于 ERP/POPo，不发送给用户。
+7. 只有 `logResult.hits` 表示匹配到的用户请求日志。
+
+### 5.2 `paas_intent_classifier`
+
+意图分类技能。没有待处理 `agentState.waitingFor` 时，先把用户消息分类为：
+
+| 场景 | 含义 |
 |---|---|
-| `conversationId` | 必须等于当前调用的 conversationId，否则按非法输出处理。 |
-| `action` | 只用于日志，不驱动客服业务流程。 |
-| `toolResults` | 可选；只写日志或调试摘要，不解释业务含义。 |
-| `newState` | 原样覆盖保存到 `ConversationContext.agentState`。 |
-| `terminal` | 保存到 `ConversationContext.terminal`，用于是否忽略后续消息。 |
+| `access_docs` | 用户询问接入、调用、配置、认证、测试、示例或文档。 |
+| `service_error` | 用户反馈错误、失败、超时、状态码、认证问题、异常响应或服务行为异常。 |
+| `other` | 非 PaaS 业务、闲聊、身份问题或当前插件不支持的问题。 |
 
-明确不需要：
+如果文本含有错误症状，优先归为 `service_error`；如果询问“怎么接入”“怎么调用”“文档在哪”“如何配置”，优先归为 `access_docs`。
 
-1. `scenario`：Java 不使用。
-2. `serviceId`：Java 不使用。
-3. `platformActions`：与 `toolResults` 重复，第一版删除。
-4. `replyToUser`：Java 不发送用户消息；如果 OpenHarness 输出该旧字段，Java 必须忽略。
+### 5.3 `paas_service_resolver`
 
-## 10. OpenHarness Skill/Tool 要求
+服务解析技能。服务身份只能来自 `paas_resolve_service` 工具和服务注册表。模型可以提取候选词，但不能直接决定最终 `serviceId`。
 
-### 10.1 Skill
+解析规则：
 
-| Skill | 职责 |
+1. 从当前消息和相关历史中提取服务候选词。
+2. 忽略“接口”“服务”“平台”“API”“报错”“文档”等泛词，除非它们和具体别名一起出现。
+3. 调用 `paas_resolve_service`。
+4. 仅当工具返回唯一服务且 `ambiguous=false` 时继续。
+5. 多候选、无候选、低置信或 `ambiguous=true` 时通过七鱼追问服务。
+
+### 5.4 `paas_access_docs_flow`
+
+接入文档流程。服务明确后调用 `paas_get_manual_url`，再通过 `qiyu_send_message` 发送短文档说明，并以 `terminal=true` 结束。
+
+服务不明确时，发送服务澄清问题并保存：
+
+```json
+{
+  "scenario": "access_docs",
+  "serviceId": null,
+  "waitingFor": "service",
+  "terminal": false,
+  "terminalReason": "waiting_for_service"
+}
+```
+
+服务明确时，完成状态为：
+
+```json
+{
+  "scenario": "access_docs",
+  "serviceId": "ocr",
+  "waitingFor": null,
+  "terminal": true,
+  "terminalReason": "manual_sent"
+}
+```
+
+### 5.5 `paas_service_error_flow`
+
+服务报错流程。服务明确后必须先 probe，再决定后续动作。
+
+#### 服务不明确
+
+通过七鱼询问具体服务，保存 `waitingFor=service`，不发送 ERP/POPo。
+
+#### 服务明确且 probe 失败
+
+调用 `paas_probe_service` 后，如果 `available=false`，或出现超时、网络错误、HTTP 5xx、认证错误、无效响应等异常，调用 `paas_send_erp_message`，不调用 `qiyu_send_message`，并以 `terminal=true` 静默结束。
+
+典型状态：
+
+```json
+{
+  "scenario": "service_error",
+  "serviceId": "tts",
+  "waitingFor": null,
+  "probeResult": {"available": false, "errorType": "auth_error"},
+  "erpSent": true,
+  "terminal": true,
+  "terminalReason": "erp_sent_after_probe_failure"
+}
+```
+
+#### 服务明确且 probe 正常，但缺少请求上下文
+
+如果 probe 正常，但当前轮缺少 `requestId` 或 `appKey`，通过七鱼询问请求上下文，保存 `waitingFor=request_context`。
+
+用户提示中允许请求：`requestId`、`appKey`、可选 `time`。`time` 如果提供，要求使用 `2026年7月2日 10:30` 格式。
+
+#### 等待请求上下文时用户补充信息
+
+当上一轮 `agentState.waitingFor=request_context` 且已有 `serviceId` 时，从当前消息和历史中提取 `requestId`、`appKey`、可选 `time`。只要有 `requestId` 或 `appKey`，就调用 `paas_query_logs`，再用 `paas_send_erp_message` 提交带 `logResult` 的 ERP/POPo 消息。该分支不调用 `qiyu_send_message`，不向用户输出日志诊断。
+
+典型状态：
+
+```json
+{
+  "scenario": "service_error",
+  "serviceId": "ocr",
+  "waitingFor": null,
+  "logResult": {
+    "serviceId": "ocr",
+    "streamName": "aicloud_ocr",
+    "queryInfo": "req-abc-123",
+    "queryInfoSource": "requestId",
+    "hits": []
+  },
+  "erpSent": true,
+  "terminal": true,
+  "terminalReason": "erp_sent_after_log_query"
+}
+```
+
+### 5.6 `paas_clarification_policy`
+
+澄清策略技能。插件只在缺少必要信息时追问：
+
+| `waitingFor` | 含义 | 下一轮期望 |
+|---|---|---|
+| `service` | 服务身份不明确。 | OCR、TTS、ASR 或注册表中的其他别名。 |
+| `request_context` | 服务明确且 probe 正常，但缺少日志查询键。 | `requestId`、`appKey`、可选 `time`。 |
+
+澄清文本必须通过 `qiyu_send_message` 发送。插件不得要求用户提供 appSecret、token、cookie、签名、私钥、完整 headers 或完整请求 payload。
+
+### 5.7 `paas_response_composer`
+
+响应撰写技能。所有用户可见消息都应简短、中文、行动导向，并且不能暴露工具名、内部 URL、日志流、环境变量、原始工具输出、token、headers、签名、cookie、appSecret、私钥或完整请求 payload。
+
+probe 失败的 ERP/POPo 分支不撰写也不发送用户通知。
+
+## 6. 工具设计
+
+### 6.1 `paas_resolve_service`
+
+输入：
+
+```json
+{
+  "message": "OCR 服务一直报 401",
+  "candidate": "OCR"
+}
+```
+
+行为：加载服务注册表，用 `service.id`、`displayName` 和 `aliases` 在候选词与消息中做包含匹配。唯一匹配时返回 `serviceId`、`confidence=0.98`、`ambiguous=false` 和候选列表；多个匹配时返回 `ambiguous=true`；无匹配时返回全部服务候选供澄清使用。
+
+该工具是只读工具。
+
+### 6.2 `paas_get_manual_url`
+
+输入：
+
+```json
+{"serviceId": "ocr"}
+```
+
+行为：从注册表读取服务的 `manualUrl`、`displayName` 和 `serviceId`。未知服务返回 `unknown_service` 错误。该工具是只读工具。
+
+### 6.3 `paas_probe_service`
+
+输入：
+
+```json
+{"serviceId": "tts"}
+```
+
+行为：读取注册表中的 probe 配置。若 probe URL 是 mock URL，直接返回可用的最小 probe 结果。真实请求会读取有道凭证，按服务模板构造 form-urlencoded 探活请求，并通过安全 HTTP 封装发送。
+
+支持的模板：
+
+| 模板 | 服务 | 探活特点 |
+|---|---|---|
+| `ocr-default` | OCR | 使用内置 demo PNG base64，期望 JSON 成功响应。 |
+| `asr-default` | ASR | 使用内置静音 WAV base64，期望 JSON 成功响应。 |
+| `tts-default` | TTS | 使用固定文本，成功响应通常是音频。 |
+
+返回最小诊断字段：
+
+```json
+{
+  "serviceId": "tts",
+  "available": true,
+  "statusCode": 200,
+  "latencyMs": 98,
+  "errorType": "ok",
+  "responseKind": "audio",
+  "apiErrorCode": null
+}
+```
+
+probe 结果只用于内部判断和 ERP/POPo 摘要，不直接发送给用户。
+
+### 6.4 `paas_query_logs`
+
+输入：
+
+```json
+{
+  "serviceId": "ocr",
+  "requestId": "req-abc-123",
+  "appKey": null,
+  "time": "2026年7月2日 10:30"
+}
+```
+
+`requestId` 和 `appKey` 至少需要一个。工具按优先级使用 `requestId`，否则使用 `appKey`。如果 `time` 能按 `yyyy年M月d日 HH:mm` 解析，则查询该时间前后 30 分钟；否则查询最近 120 分钟并标记 `timeFallback=true`。
+
+输出包含：
+
+| 字段 | 说明 |
 |---|---|
-| `paas_customer_service_router` | 总入口，编排子流程。 |
-| `paas_intent_classifier` | 判断用户意图和场景。 |
-| `paas_service_resolver` | 识别服务和别名。 |
-| `paas_clarification_policy` | 生成追问策略和追问文本。 |
-| `paas_access_docs_flow` | 查询并发送接入文档。 |
-| `paas_service_error_flow` | probe、查日志、ERP 和用户通知。 |
-| `paas_response_composer` | 生成用户可见文本。 |
+| `serviceId` | 服务 ID。 |
+| `streamName` | 注册表中的 o2log 流名。 |
+| `queryInfo` | 实际查询键。 |
+| `queryInfoSource` | `requestId` 或 `appKey`。 |
+| `time` | 用户提供的时间文本。 |
+| `timeFallback` | 是否使用默认最近 120 分钟。 |
+| `startTime` / `endTime` | o2log 查询窗口时间戳。 |
+| `mock` | 是否命中 mock endpoint。 |
+| `hits` | 唯一表示匹配用户请求日志的列表。 |
+| `queryError` | 可选，表示日志平台查询自身错误。 |
 
-Skill 可以承载服务知识、接入说明、常见错误码、排障 runbook、用户话术策略和示例模板。Skill 不应承载真实密钥，也不应让模型复制 curl 并通过 Bash 执行真实外部调用。
+`hits=[]` 只表示未找到匹配日志，不代表用户 API 调用认证失败、签名错误、服务异常或 appKey 无效。`queryError` 只表示 o2log 查询错误，不表示用户的 PaaS API 错误。
 
-### 10.2 Tool
+### 6.5 `paas_send_erp_message`
 
-| Tool | 职责 |
-|---|---|
-| `qiyu_send_message` | 向七鱼会话发送用户可见消息。 |
-| `paas_get_manual_url` | 查询服务接入文档 URL。 |
-| `paas_probe_service` | 执行在线 probe。 |
-| `paas_query_logs` | 查询错误日志摘要。 |
-| `paas_send_erp_message` | 发送 ERP 或内部工单消息。 |
-| `paas_emit_alert` | 发送内部告警。 |
+输入：
 
-真实外部副作用必须由 Tool 或 MCP 完成，不允许模型通过通用 Bash 执行 Skill 中的 curl 示例。原因：
+```json
+{
+  "serviceId": "ocr",
+  "userSummary": "用户反馈 OCR 服务 401",
+  "probeSummary": "probe unavailable: serviceId=ocr, errorType=auth_error",
+  "logResult": {"hits": []},
+  "platformContext": {
+    "conversationId": "qiyu:6383959733",
+    "platformSessionId": "6383959733",
+    "platformUserId": "user-1"
+  }
+}
+```
 
-1. Skill 是给模型看的文本，真实 token、header、内部域名或 curl 容易进入上下文、日志或调试输出。
-2. Bash 只能看到一段 shell 字符串，难以按"发送七鱼消息""查日志""发 ERP 消息"做细粒度审计、限流和确认。
-3. 日志查询、七鱼发送和 ERP 发送需要结构化参数、服务白名单、超时、重试和幂等控制。
-4. Java 需要稳定 JSON 摘要，而不是自然语言和 curl 输出混杂。
+行为：从注册表读取 ERP 产品和处理说明，构造 POPo/ERP 消息，并通过 JSON HTTP 请求发送。消息包含产品、处理说明、用户摘要、可选 probe 摘要、可选日志结果、会话和平台上下文。`logResult` 会被 JSON 压缩并限制在 4000 字符内，超出时截断。
 
-所有外部调用工具都应：
+默认 POPo endpoint 写在工具内，也可通过 `PAAS_POPO_ENDPOINT` 或 `PAAS_ERP_ENDPOINT` 覆盖。
 
-- 从环境变量、配置文件或安全配置中心读取凭据，不从用户消息读取。
-- 不在 `ToolResult.output` 中输出 token/header。
-- 对外部响应做长度限制。
-- 对 4xx/5xx/timeout 明确分类。
-- 有明确超时和重试策略。
-- 对发送类操作提供幂等键或等价的重复保护。
+### 6.6 `qiyu_send_message`
 
-### 10.3 qiyu_send_message Tool 协议
-
-入参：
+输入：
 
 ```json
 {
   "conversationId": "qiyu:6383959733",
   "platformSessionId": "6383959733",
-  "platformUserId": "81275614-ff4c-490e-9517-0934f4fc9325@顺风车乘客",
-  "staffId": "4126122",
+  "platformUserId": "user-1",
+  "staffId": "staff-1",
   "messageType": "TEXT",
-  "content": "请问你反馈的是 OCR、TTS 还是 ASR 服务？",
+  "content": "请问你咨询的是哪个服务？例如 OCR、TTS 或 ASR。"
 }
 ```
 
-出参进入 `toolResults` 即可：
+行为：向七鱼发送用户可见文本。默认 endpoint 为 `http://localhost:8686/http/ai-customer-service/qiyu-sendMsg`，可通过 `QIYU_SEND_MESSAGE_ENDPOINT` 覆盖；默认 admin token 可通过 `ADMIN_TOKEN` 覆盖。设置 `QIYU_SEND_MESSAGE_MOCK=true` 时不发真实 HTTP，只记录 assistant message。
 
-```json
-{
-  "tool": "qiyu_send_message",
-  "success": true,
-  "summary": "sent text message to qiyu conversation"
-}
+成功发送后，工具会把消息记录到 turn message 缓存，供 `paas_finish_decision` 自动写入 `assistantMessages`。
+
+### 6.7 `paas_finish_decision`
+
+输入包括 `conversationId`、`action`、`toolResults`、可选 `assistantMessages`、`newState` 和 `terminal`。
+
+校验规则：
+
+1. `conversationId` 不能为空。
+2. 顶层 `terminal` 必须等于 `newState.terminal`。
+3. `terminal=false` 时必须设置 `newState.waitingFor`。
+4. `service_error` 场景中，如果有 `serviceId` 且 `erpSent=true`，必须带 `probeResult`。
+
+该工具是每轮的唯一结构化出口。
+
+## 7. 服务注册表
+
+默认注册表路径为：
+
+```text
+.openharness/plugins/paas-customer-service/config/paas-services.example.yaml
 ```
 
-要求：
+可通过环境变量覆盖：
 
-1. `platformUserId` 使用七鱼 `foreign_id`，没有值时为空字符串。
-2. Tool 自己负责七鱼发送 API 鉴权。
-3. Tool 自己负责发送幂等、重试和错误处理。
-4. Tool 返回错误摘要时不能包含 token、签名或完整响应体。
-5. Tool 结果进入 OpenHarness 输出 `toolResults`。
-
-## 11. OpenHarness 命令调用需求
-
-建议命令形态：
-
-```bash
-oh --print --output-format json --prompt-file /tmp/paas-input.json
+```text
+PAAS_SERVICE_REGISTRY_PATH=/absolute/path/to/paas-services.yaml
 ```
 
-Java 行为：
-
-1. 使用临时文件传入 input JSON，避免命令行长度和 shell 转义问题。
-2. 使用配置中的 command、args、workingDirectory。
-3. 将 `{inputFile}` 替换为临时文件路径。
-4. 设置超时，默认 30 秒。
-5. 限制并发进程数。
-6. stdout 解析为 OpenHarness 输出 JSON。
-7. stderr 只写内部日志。
-8. 调用完成后删除临时文件。
-9. WebFlux 中阻塞调用必须放到 boundedElastic 或受控调度器中。
-
-如果当前 CLI 的 `--output-format json` 包装为 `{"type":"result","text":"..."}`，则 OpenHarness 侧应保证 `text` 本身是可解析的最小输出 JSON，Java 只做最小解析和校验。后续如有必要，可增强 OpenHarness 输出模式，让最终摘要直接作为顶层 JSON 输出。
-
-## 12. 异常处理
-
-| 场景 | Java 行为 |
-|---|---|
-| 七鱼鉴权失败 | 返回 HTTP 401，不写会话，不调用 OpenHarness。 |
-| 忽略类事件 | 返回 ACK，不调用 OpenHarness。 |
-| 重复消息 | 返回 ACK，不调用 OpenHarness。 |
-| OpenHarness 超时 | kill 子进程，写日志，返回 ACK，不发送兜底消息。 |
-| OpenHarness 非法 JSON | 写内部日志，返回 ACK，不发送兜底消息。 |
-| OpenHarness 进程异常 | 写内部日志，返回 ACK，不发送兜底消息。 |
-| OpenHarness `conversationId` 不匹配 | 按非法输出处理，写内部日志，返回 ACK，不发送兜底消息。 |
-| OpenHarness `terminal=true` | 保存 `newState` 和 `terminal=true`，返回 ACK。 |
-| OpenHarness `terminal=false` | 保存 `newState` 和 `terminal=false`，返回 ACK。 |
-
-## 13. 安全要求
-
-1. Java 必须校验七鱼请求签名。
-2. Java 必须校验 timestamp，防止重放。
-3. Java 不能把七鱼 AppSecret 传给 OpenHarness。
-4. Java 不能把七鱼 `checksum` 传给 OpenHarness。
-5. Java 不能把七鱼内部 `user_id` 作为 `platformUserId` 传给 OpenHarness。
-6. Java 不能把 `rawPayload` 传给 OpenHarness。
-7. Java 写临时文件时应限制当前进程可读写。
-9. Java 不得把 OpenHarness stdout/stderr 原样返回七鱼或用户。
-10. Java 不调用七鱼发送消息 API。
-11. Java 不维护用户可见兜底话术。
-12. OpenHarness Tool 不得把真实凭据写入模型上下文、工具结果或日志。
-13. 日志查询 Tool 不得接受任意原始 DSL；应只接受结构化字段并拼接白名单查询。
-14. ERP、七鱼发送等发送类 Tool 必须具备幂等或重复保护。
-
-## 14. 配置需求
+注册表结构：
 
 ```yaml
-ai-customer-service:
-  platform-a:
-    qiyu:
-      app-key: "${QIYU_APP_KEY}"
-      app-secret: "${QIYU_APP_SECRET}"
-      timestamp-tolerance-seconds: 300
-  openharness:
-    command: "oh"
-    working-directory: "/Users/admin/PycharmProjects/OpenHarness"
-    timeout-millis: 30000
-    max-concurrent-processes: 4
-    args:
-      - "--print"
-      - "--output-format"
-      - "json"
-      - "--prompt-file"
-      - "{inputFile}"
-  conversation:
-    max-conversations: 10000
-    max-history-messages: 20
-    max-history-chars: 12000
-    expire-after-minutes: 120
-    ignore-terminal-conversation-messages: true
+services:
+  - id: ocr
+    displayName: OCR 文字识别
+    aliases:
+      - ocr
+      - OCR
+      - 文字识别
+    manualUrl: "https://ai.youdao.com/DOCSIRMA/html/ocr/api/tyocr/"
+    probe:
+      type: http
+      method: POST
+      url: "https://openapi.youdao.com/ocrapi"
+      timeoutMs: 10000
+      requestTemplateRef: "ocr-default"
+    log:
+      stream_name: "aicloud_ocr"
+    erp:
+      product: "ocr"
+      message: "用户反馈 OCR 服务异常，请客服结合 probe 和日志摘要跟进。"
 ```
 
-## 15. 验收标准
+当前示例注册了 OCR、TTS 和 ASR。每个服务必须包含非空 `aliases`，并提供文档 URL、probe 配置、o2log stream 和 ERP/POPo 元数据。
 
-### 15.1 基础链路
+## 8. 运行时状态模型
 
-1. 七鱼发送有效文本 `CLIENT_MESSAGE`。
-2. Java 完成鉴权和解析。
-3. Java 生成最小 OpenHarness 输入 JSON。
-4. Java 调用 `oh`。
-5. OpenHarness 通过 `qiyu_send_message` Tool 给用户发消息。
-6. Java 解析最小输出 JSON。
-7. Java 保存 `newState` 和 `terminal`。
-8. Java 返回 ACK。
-9. Java 不调用七鱼发送消息 API。
+`newState` 是跨轮状态的唯一来源。Java 必须原样保存，并在下一轮作为 `agentState` 传回。
 
-### 15.2 多轮状态
+| 字段 | 说明 |
+|---|---|
+| `scenario` | `access_docs`、`service_error` 或 `other`。 |
+| `serviceId` | 注册表服务 ID；未解析时为 `null`。 |
+| `waitingFor` | `service`、`request_context` 或 `null`。 |
+| `clarificationCount` | 当前场景已追问次数。 |
+| `probeResult` | 运行过 probe 时的脱敏诊断摘要。 |
+| `logResult` | 日志查询结果；只有 `hits` 是匹配用户请求日志。 |
+| `erpSent` | 是否成功提交 ERP/POPo。 |
+| `erpMessageId` | ERP/POPo 消息 ID；没有时为 `null`。 |
+| `terminal` | 当前预处理场景是否结束。 |
+| `terminalReason` | 稳定结束原因，例如 `manual_sent`、`waiting_for_service`、`waiting_for_request_context`、`erp_sent_after_probe_failure`、`erp_sent_after_log_query`。 |
 
-1. 第一轮 OpenHarness 返回 `terminal=false` 和 `newState`。
-2. Java 保存 `newState`。
-3. 第二轮 Java 把上一轮 `agentState` 和访客 history 传给 OpenHarness。
-4. Java 不解析 `agentState` 内部业务字段。
+## 9. 端到端流程
 
-### 15.3 最小协议
+### 9.1 接入文档
 
-1. OpenHarness 输入不包含 `platform`、`currentMessage.messageType`、`currentMessage.createdAt`、`platformMessageId`、`user_id`、`appKey`、`appSecret`、`checksum`、`rawPayload`。
-2. OpenHarness 输出不要求 `scenario`、`serviceId`、`platformActions`。
-3. 如果 OpenHarness 输出 `replyToUser`，Java 忽略。
-4. `platformUserId` 必须来自七鱼 `foreign_id`，没有值时为空字符串。
+```text
+用户询问接入/调用/文档
+  -> classify: access_docs
+  -> paas_resolve_service
+     -> 未唯一命中: qiyu_send_message 追问服务 -> paas_finish_decision(terminal=false)
+     -> 唯一命中: paas_get_manual_url
+  -> qiyu_send_message 发送文档 URL
+  -> paas_finish_decision(terminal=true, terminalReason=manual_sent)
+```
 
-### 15.4 忽略和异常
+### 9.2 服务报错：probe 异常
 
-1. 非文本消息 ACK，不调用 OpenHarness。
-2. 已撤回消息 ACK，不调用 OpenHarness。
-3. 空内容消息 ACK，不调用 OpenHarness。
-4. 重复消息 ACK，不重复调用 OpenHarness。
-5. OpenHarness 超时、非法 JSON、进程异常时 ACK，不发送兜底消息。
+```text
+用户反馈服务报错
+  -> classify: service_error
+  -> paas_resolve_service
+     -> 未唯一命中: qiyu_send_message 追问服务 -> paas_finish_decision(terminal=false)
+     -> 唯一命中: paas_probe_service
+  -> probeResult.available=false
+  -> paas_send_erp_message
+  -> 不调用 qiyu_send_message
+  -> paas_finish_decision(terminal=true, terminalReason=erp_sent_after_probe_failure)
+```
 
-## 16. 后续演进
+### 9.3 服务报错：probe 正常但缺上下文
 
-第一版不做以下能力：
+```text
+用户反馈服务报错
+  -> classify: service_error
+  -> paas_resolve_service
+  -> paas_probe_service
+  -> probeResult.available=true
+  -> 缺少 requestId/appKey
+  -> qiyu_send_message 询问 requestId、appKey、可选 time
+  -> paas_finish_decision(terminal=false, waitingFor=request_context)
+```
 
-1. 数据库持久化。
-2. Redis 去重或会话共享。
-3. 多节点会话一致性。
-4. 平台动作明细模型。
-5. OpenHarness 调用摘要对象。
-6. Java 侧七鱼发送消息。
-7. Java 侧 ERP 发送。
-8. Java 侧服务识别。
-9. Java 侧客服流程编排。
-10. 常驻 bridge/daemon 模式。
+### 9.4 服务报错：补充上下文后查日志并提交 ERP/POPo
 
-如后续需要生产级审计、重试、跨节点部署或多平台支持，再引入持久化存储、独立去重记录、调用摘要、平台动作模型、平台适配层或 OpenHarness bridge/daemon。只有当本地 `oh` 单次执行的冷启动延迟和并发成本无法满足生产要求时，才评估常驻模式。
+```text
+agentState.waitingFor=request_context
+  -> 从当前消息和历史提取 requestId/appKey/time
+  -> paas_query_logs
+  -> paas_send_erp_message(logResult=日志查询结果)
+  -> 不调用 qiyu_send_message
+  -> paas_finish_decision(terminal=true, terminalReason=erp_sent_after_log_query)
+```
 
-## 17. Java 设计文档生成提示
+### 9.5 其他场景
 
-根据本 SDD 生成 Java 设计文档时，Java 第一版只需要以下核心类：
+```text
+用户消息不属于 PaaS 接入或服务报错
+  -> classify: other
+  -> 不调用 probe/log/ERP/POPo
+  -> paas_finish_decision(terminal=true)
+```
 
-1. `AiCustomerServiceController`
-2. `AiCustomerServiceExecutor`
-3. `OpenHarnessClient`
-4. `AiCustomerServiceProperties`
-5. `QiyuCallbackEvent`
-6. `HistoryMessage`
-7. `ConversationContext`
-8. `OpenHarnessOutput`
-9. `OpenHarnessToolResult`
+## 10. 环境变量
 
-不得生成以下 Java 类：
+| 环境变量 | 作用 |
+|---|---|
+| `PAAS_SERVICE_REGISTRY_PATH` | 覆盖服务注册表路径。 |
+| `YOUDAO_<SERVICE>_APP_KEY` | 指定服务的有道 appKey，例如 `YOUDAO_OCR_APP_KEY`。 |
+| `YOUDAO_<SERVICE>_APP_SECRET` | 指定服务的有道 appSecret，例如 `YOUDAO_OCR_APP_SECRET`。 |
+| `YOUDAO_APP_KEY` | 所有服务共用的默认有道 appKey。 |
+| `YOUDAO_APP_SECRET` | 所有服务共用的默认有道 appSecret。 |
+| `PAAS_O2LOG_ENDPOINT` | 覆盖 o2log 查询 endpoint。 |
+| `PAAS_O2LOG_AUTHORIZATION` | o2log 查询 Authorization header。 |
+| `PAAS_POPO_ENDPOINT` | 覆盖 POPo/ERP endpoint。 |
+| `PAAS_ERP_ENDPOINT` | POPo/ERP endpoint 的兼容覆盖项。 |
+| `QIYU_SEND_MESSAGE_ENDPOINT` | 覆盖七鱼发送消息 endpoint。 |
+| `QIYU_SEND_MESSAGE_MOCK` | 为 `true` 时七鱼发送消息走 mock，只记录 assistant message。 |
+| `ADMIN_TOKEN` | 调用七鱼发送消息 endpoint 的 Admin-Token。 |
 
-1. `MessageDedupService`
-2. `MessageHistoryService`
-3. `AgentStateService`
-4. `ConversationStore`
-5. `InMemoryConversationStore`
-6. `OpenHarnessGateway`
-7. `OpenHarnessInputBuilder`
-8. `OpenHarnessProcessExecutor`
-9. `OpenHarnessResponseParser`
-10. `QiyuSignatureVerifier`
-11. `QiyuMessageParser`
-12. `OpenHarnessPlatformAction`
-13. `OpenHarnessInvocationSummary`
-14. `AgentStateSnapshot`
-15. `ConversationMessage`
-16. `ProcessedMessageRecord`
-17. `ConversationStatus`
-18. `MessageRole`
-19. `ProcessedMessageStatus`
-20. `QiyuReplyService`
-21. `FallbackReplyService`
-22. 任何负责用户话术生成、用户消息发送、ERP 业务发送、服务识别或排障流程编排的 Java 类。
+## 11. 安全与错误语义
+
+1. 工具错误必须安全摘要，不能暴露原始异常、token、headers、cookies、签名、完整 appKey、appSecret、私钥或原始日志。
+2. 用户可见消息必须通过 `qiyu_send_message`，不能让 Java 代发业务兜底消息。
+3. probe 失败 ERP/POPo 分支不发送七鱼消息，避免向用户暴露内部探活诊断。
+4. 日志查询结果只用于 ERP/POPo；不要通过七鱼发送 raw logs 或日志诊断。
+5. `logResult.hits` 是唯一表示匹配用户请求日志的字段。
+6. `hits=[]` 只表示未找到匹配日志，不能推断用户请求认证失败、签名错误、服务异常或 appKey 无效。
+7. `queryError` 表示 o2log 查询自身失败，不表示用户的 PaaS API 调用失败。
+8. 服务 ID、文档 URL、日志流、ERP 产品名必须来自注册表或工具结果，不能由模型记忆生成。
+9. 插件不得执行技能文档中的 curl、Bash 或示例请求。
+10. `paas_finish_decision` 是每轮唯一结构化出口；不能只返回自然语言。
+
+## 12. 测试覆盖
+
+当前插件测试集中在 `tests/test_plugins/test_paas_customer_service/`，覆盖以下方向：
+
+| 测试文件 | 覆盖重点 |
+|---|---|
+| `test_paas_agent_input_model.py` | Java 输入模型字段和别名。 |
+| `test_paas_resolve_service_tool.py` | 服务注册表解析、唯一匹配、歧义和候选返回。 |
+| `test_paas_get_manual_url_tool.py` | 文档 URL 从注册表读取，未知服务错误。 |
+| `test_paas_probe_service_tool.py` | probe 结果分类、mock、凭证缺失和服务模板行为。 |
+| `test_paas_query_logs_tool.py` | requestId/appKey 查询、时间窗口、`hits` 与 query error 语义。 |
+| `test_paas_send_erp_message_tool.py` | POPo/ERP 消息格式、endpoint 覆盖、截断和错误处理。 |
+| `test_paas_finish_decision_tool.py` | 终态校验、等待状态校验、assistant message 汇总。 |
+
+建议修改插件行为时优先补充对应工具级测试。技能文档变更需要人工按端到端路径走查：接入文档、服务不明确、probe 失败、probe 正常缺上下文、补充上下文查日志、other 场景。
+
+## 13. 维护规则
+
+1. 新增服务时，只扩展服务注册表和必要的服务技能文档；不要在路由技能中硬编码服务 ID。
+2. 新增 probe 模板时，在 `_youdao_probe.py` 中增加模板构造和结果分类，并补充工具测试。
+3. 新增日志查询字段时，保持 `paas_query_logs` 的结构化输入；不要允许模型传 raw SQL、DSL 或 Lucene 查询。
+4. 新增用户话术时，先确认是否需要用户可见消息；probe 失败 ERP/POPo 分支继续保持静默。
+5. 新增 Java 字段时，必须保持 Java 侧薄桥接边界：Java 只传上下文，不解释插件业务状态。
